@@ -1,0 +1,61 @@
+# word weight
+AXM2 10
+TY2-BU8 10
+XMM2 10
+ACM2 10
+PCBA 8
+VISP 8
+TIM 8
+AOI 8
+SFIS 8
+MTD 7
+CCD 7
+FVT 7
+TSPLOG 7
+Coldplate 6
+Flex Cable 6
+XMM Cover 6
+Fastening 5
+Fasten PCBA 5
+Dispensing 5
+NanoCoating 5
+DISPENSOR 5
+AE報修登記表 6
+故障現象 5
+原因分析 5
+處理方式 5
+維修紀錄 5
+點膠AOI FAIL 7
+點膠FAIL 6
+點膠覆蓋率不佳 7
+漏膠 6
+出膠異常 6
+出膠不穩定 6
+起子控制器數據讀取失敗 7
+斜鎖偵測 7
+斜鎖 6
+真斜鎖 6
+假斜鎖 6
+浮鎖 6
+真浮鎖 6
+假浮鎖 6
+滑牙 6
+真滑牙 6
+假滑牙 6
+鎖附 5
+螺絲未鎖到底 6
+螺絲無浮高 6
+扭力 5
+角度上限 5
+已存圖檔 6
+未上傳SFIS 6
+解螺絲重投 6
+維修解鎖後重新投產 6
+手動補點膠 6
+更換針閥 5
+校正點膠位置 5
+更換主板 4
+重插排線 4
+更新 BIOS 4
+燒機測試 4
+功能測試 4

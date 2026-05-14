@@ -1,0 +1,51 @@
+name: sop-generation-agent
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sop-generation-agent:mvp
+    ports:
+      - "${SOP_PORT:-7860}:7860"
+    environment:
+      SOP_DATA_ROOT: /data/jobs
+      SOP_FRONTEND_DIST: /app/frontend/dist
+      SOP_MODELS_PATH: /app/backend/models.json
+      SOP_JOB_RETENTION_DAYS: ${SOP_JOB_RETENTION_DAYS:-30}
+      SOP_JOB_CLEANUP_INTERVAL_SECONDS: ${SOP_JOB_CLEANUP_INTERVAL_SECONDS:-3600}
+      SOP_CHUNK_SIZE: ${SOP_CHUNK_SIZE:-900}
+      SOP_CHUNK_OVERLAP: ${SOP_CHUNK_OVERLAP:-120}
+      SOP_CHUNK_METHOD: ${SOP_CHUNK_METHOD:-vanilla}
+      SOP_SECTION_DETECTION_MODE: ${SOP_SECTION_DETECTION_MODE:-rules}
+      SOP_RETRIEVAL_MODE: ${SOP_RETRIEVAL_MODE:-dense_sparse_rrf}
+      SOP_RRF_K: ${SOP_RRF_K:-60}
+      SOP_SOURCE_TOP_K: ${SOP_SOURCE_TOP_K:-6}
+      SOP_REFERENCE_TOP_K: ${SOP_REFERENCE_TOP_K:-5}
+      SOP_REFERENCE_PREFILTER_LIMIT: ${SOP_REFERENCE_PREFILTER_LIMIT:-80}
+      SOP_SOURCE_SCORE_THRESHOLD: ${SOP_SOURCE_SCORE_THRESHOLD:-0.08}
+      SOP_REFERENCE_SCORE_THRESHOLD: ${SOP_REFERENCE_SCORE_THRESHOLD:-0.05}
+      SOP_CJK_TOKENIZER: ${SOP_CJK_TOKENIZER:-auto}
+      SOP_SCRIPT_NORMALIZATION: ${SOP_SCRIPT_NORMALIZATION:-dual}
+      SOP_CKIPTAGGER_DATA_DIR: ${SOP_CKIPTAGGER_DATA_DIR:-}
+      SOP_DOMAIN_DICT_PATH: ${SOP_DOMAIN_DICT_PATH:-/config/domain_terms.txt}
+      SOP_CKIPTAGGER_DICT_MODE: ${SOP_CKIPTAGGER_DICT_MODE:-recommend}
+      SOP_JIEBA_DICT_PATH: ${SOP_JIEBA_DICT_PATH:-/config/jieba_terms.txt}
+      SOP_DOMAIN_TOKEN_EXTRACTION: ${SOP_DOMAIN_TOKEN_EXTRACTION:-true}
+      SOP_DOMAIN_TERM_LLM_ENABLED: ${SOP_DOMAIN_TERM_LLM_ENABLED:-false}
+      SOP_DOMAIN_TERM_CONFIDENCE_THRESHOLD: ${SOP_DOMAIN_TERM_CONFIDENCE_THRESHOLD:-0.75}
+      SOP_LLM_API_KEY: ${SOP_LLM_API_KEY:-ollama}
+      SOP_EMBEDDING_API_URL: ${SOP_EMBEDDING_API_URL:-http://host.docker.internal:11434/api/embeddings}
+      SOP_EMBEDDING_API_KEY: ${SOP_EMBEDDING_API_KEY:-}
+      SOP_EMBEDDING_MODEL: ${SOP_EMBEDDING_MODEL:-qwen3-embedding:0.6b}
+      SOP_EMBEDDING_TIMEOUT_SECONDS: ${SOP_EMBEDDING_TIMEOUT_SECONDS:-8}
+      SOP_OCR_API_BASE: ${SOP_OCR_API_BASE:-}
+      SOP_OCR_API_KEY: ${SOP_OCR_API_KEY:-}
+      SOP_OCR_MODEL: ${SOP_OCR_MODEL:-}
+      SOP_OCR_TIMEOUT_SECONDS: ${SOP_OCR_TIMEOUT_SECONDS:-120}
+    volumes:
+      - ./data/jobs:/data/jobs
+      - ./backend/models.json:/app/backend/models.json:ro
+      - ./config:/config:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

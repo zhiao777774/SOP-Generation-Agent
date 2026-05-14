@@ -1,0 +1,31 @@
+# word freq
+AXM2 10
+TY2-BU8 10
+XMM2 10
+ACM2 10
+PCBA 8
+VISP 8
+TIM 8
+AOI 8
+SFIS 8
+MTD 7
+CCD 7
+FVT 7
+TSPLOG 7
+Coldplate 6
+Flex Cable 6
+XMM Cover 6
+點膠AOI FAIL 7
+點膠覆蓋率不佳 7
+起子控制器數據讀取失敗 7
+斜鎖偵測 7
+真斜鎖 6
+假斜鎖 6
+真浮鎖 6
+假浮鎖 6
+真滑牙 6
+假滑牙 6
+螺絲未鎖到底 6
+螺絲無浮高 6
+未上傳SFIS 6
+維修解鎖後重新投產 6

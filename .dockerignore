@@ -1,0 +1,10 @@
+.DS_Store
+.omx
+.git
+.env
+data
+frontend/node_modules
+frontend/dist
+__pycache__
+.pytest_cache
+*.pyc
