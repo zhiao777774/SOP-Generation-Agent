@@ -52,6 +52,7 @@ class ReviewDecision(BaseModel):
 class JobStatus(BaseModel):
     job_id: str
     status: JobStatusValue
+    owner_id: Optional[str] = None
     current_step: str = ""
     progress: float = 0.0
     message: Optional[str] = None
@@ -74,6 +75,27 @@ class UploadedFiles(BaseModel):
     template_file: Optional[str] = None
 
 
+class TemplateBlock(BaseModel):
+    block_id: str
+    text: str
+    style_name: Optional[str] = None
+    source_type: str = "paragraph"
+    order_index: int = 0
+    metadata: Dict[str, str] = Field(default_factory=dict)
+
+
+class TemplateSectionCandidate(BaseModel):
+    candidate_id: str
+    title: str
+    level: int = 1
+    source_block_ids: List[str] = Field(default_factory=list)
+    confidence: float = 0.0
+    reason: str = ""
+    detector: str = "rules"
+    warnings: List[str] = Field(default_factory=list)
+    metadata: Dict[str, str] = Field(default_factory=dict)
+
+
 class TemplateSection(BaseModel):
     section_id: str
     title: str
@@ -82,6 +104,11 @@ class TemplateSection(BaseModel):
     end_block_index: Optional[int] = None
     existing_text: str = ""
     style_name: Optional[str] = None
+    source_block_ids: List[str] = Field(default_factory=list)
+    confidence: float = 1.0
+    operation: str = "keep"
+    reason: str = ""
+    warnings: List[str] = Field(default_factory=list)
 
 
 class TemplateRefinementSuggestion(BaseModel):
@@ -97,6 +124,16 @@ class TemplateStructure(BaseModel):
     sections: List[TemplateSection]
     warnings: List[str] = Field(default_factory=list)
     refinement_suggestions: List[TemplateRefinementSuggestion] = Field(default_factory=list)
+    blocks: List[TemplateBlock] = Field(default_factory=list)
+    candidates: List[TemplateSectionCandidate] = Field(default_factory=list)
+    resolution_id: str = ""
+    refinement_mode: str = "rules"
+    feedback_intent: str = "guidance"
+    feedback: str = ""
+
+
+class TemplateRefineRequest(BaseModel):
+    feedback: str = ""
 
 
 class SourceChunk(BaseModel):
@@ -183,6 +220,7 @@ class RetrievalMetadata(BaseModel):
     reference_prefilter_limit: int = 80
     rrf_k: int = 60
     sparse_fallback: bool = False
+    section_resolution_id: str = ""
     section_queries: Dict[str, str] = Field(default_factory=dict)
     tokenization_report: Dict = Field(default_factory=dict)
     domain_term_suggestions: List[DomainTermSuggestion] = Field(default_factory=list)

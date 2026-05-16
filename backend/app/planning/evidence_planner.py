@@ -52,6 +52,8 @@ class EvidencePlanner:
         source_documents: List[SourceDocument],
         reference_documents: List[ReferenceDocument],
         progress_callback: Optional[Callable[[str, str, float], None]] = None,
+        global_feedback: str = "",
+        section_feedback: Optional[dict] = None,
     ) -> EvidencePlan:
         source_chunks = [chunk for document in source_documents for chunk in document.chunks]
         reference_items = [item for document in reference_documents for item in document.items]
@@ -88,8 +90,18 @@ class EvidencePlanner:
 
         sections: List[SectionEvidence] = []
         section_queries = {}
+        section_feedback = section_feedback or {}
         for section_index, section in enumerate(template.sections):
-            section_query = f"{section.title}\n{section.existing_text}".strip()
+            section_query = "\n".join(
+                item
+                for item in [
+                    section.title,
+                    section.existing_text,
+                    global_feedback,
+                    section_feedback.get(section.section_id, ""),
+                ]
+                if item
+            ).strip()
             section_queries[section.section_id] = section_query
             source_ranked = self._rank_source(section_query, source_chunks, source_bm25, source_embeddings)
             selected_sources = [
@@ -145,6 +157,7 @@ class EvidencePlanner:
             reference_prefilter_limit=self.reference_prefilter_limit,
             rrf_k=self.rrf_k,
             sparse_fallback=self.sparse_fallback,
+            section_resolution_id=template.resolution_id,
             section_queries=section_queries,
             tokenization_report={
                 "source": source_bm25.tokenization_report("source_chunks"),

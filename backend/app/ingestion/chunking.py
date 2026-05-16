@@ -12,7 +12,8 @@ class ChunkedText:
 
 
 def summarize(text: str, limit: int = 180) -> str:
-    compact = re.sub(r"\s+", " ", text).strip()
+    without_page_markers = re.sub(r"<!--\s*Page\s+\d+\s*-->", " ", text)
+    compact = re.sub(r"\s+", " ", without_page_markers).strip()
     return compact[:limit] + ("..." if len(compact) > limit else "")
 
 

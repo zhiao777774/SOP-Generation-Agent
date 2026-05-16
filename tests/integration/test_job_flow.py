@@ -2,6 +2,8 @@ import os
 from pathlib import Path
 import time
 
+import pytest
+
 from backend.app.core.config import AppConfig, ProviderConfig
 from backend.app.pipeline.schemas import (
     GateName,
@@ -100,7 +102,10 @@ def test_enabled_gates_block_generation_until_approved(tmp_path):
     service.analyze(job_id)
     status = artifacts.read_json(job_id, "status", JobStatus)
     assert status.status == JobStatusValue.NEEDS_REVIEW
-    assert GateName.TEMPLATE in status.pending_gates
+    assert status.current_step == "template_review_ready"
+    assert status.pending_gates == [GateName.TEMPLATE]
+    assert artifacts.artifact_path(job_id, "template_section_resolution").exists()
+    assert not artifacts.artifact_path(job_id, "evidence_plan").exists()
 
     try:
         service.generate(job_id, GenerationProfile())
@@ -110,13 +115,50 @@ def test_enabled_gates_block_generation_until_approved(tmp_path):
         raise AssertionError("generation should wait for template/evidence approvals")
 
     service.approve_gate(job_id, GateName.TEMPLATE, ReviewDecisionRequest())
+    status = artifacts.read_json(job_id, "status", JobStatus)
+    assert status.current_step == "analysis_ready"
+    assert status.pending_gates == [GateName.EVIDENCE]
+    assert artifacts.artifact_path(job_id, "evidence_plan").exists()
+
     service.approve_gate(job_id, GateName.EVIDENCE, ReviewDecisionRequest(global_feedback="Use field language."))
+    try:
+        service.replan_evidence(job_id, ReviewDecisionRequest(global_feedback="Change mapping after approval."))
+    except PermissionError:
+        pass
+    else:
+        raise AssertionError("evidence re-plan should be blocked after evidence approval")
+
     service.generate(job_id, GenerationProfile())
     status = artifacts.read_json(job_id, "status", JobStatus)
     assert status.status == JobStatusValue.NEEDS_REVIEW
     assert status.current_step == "draft_ready"
     assert status.progress == 0.95
     assert status.pending_gates == [GateName.DRAFT]
+
+
+def test_template_feedback_refines_proposal_without_direct_replacement_when_llm_unavailable(tmp_path):
+    artifacts, service = make_service(tmp_path)
+    job_id = artifacts.create_job(ReviewSettings())
+    seed_uploads(artifacts, job_id)
+
+    proposal = service.analyze(job_id)
+    assert [section.title for section in proposal.sections] == ["1. Maintenance"]
+
+    refined = service.refine_template_sections(
+        job_id,
+        "1. Safety Requirements\n2. Repair Procedure\n3. Acceptance Criteria",
+    )
+
+    status = artifacts.read_json(job_id, "status", JobStatus)
+    assert [section.title for section in refined.sections] == ["1. Maintenance"]
+    assert refined.refinement_mode == "rules"
+    assert any("not configured" in warning for warning in refined.warnings)
+    assert status.current_step == "template_review_ready"
+    assert status.pending_gates == [GateName.TEMPLATE]
+    assert artifacts.maybe_read_json(job_id, "review_template_review") is None
+    assert artifacts.maybe_read_json(job_id, "review_evidence_review") is None
+    assert not artifacts.artifact_path(job_id, "evidence_plan").exists()
+    assert not artifacts.artifact_path(job_id, "generated_sections").exists()
 
 
 def test_reanalysis_invalidates_previous_reviews_and_draft_outputs(tmp_path):
@@ -137,12 +179,13 @@ def test_reanalysis_invalidates_previous_reviews_and_draft_outputs(tmp_path):
     status = artifacts.read_json(job_id, "status", JobStatus)
 
     assert status.status == JobStatusValue.NEEDS_REVIEW
-    assert status.current_step == "analysis_ready"
-    assert status.progress == 0.65
-    assert status.pending_gates == [GateName.TEMPLATE, GateName.EVIDENCE]
+    assert status.current_step == "template_review_ready"
+    assert status.progress == 0.55
+    assert status.pending_gates == [GateName.TEMPLATE]
     assert artifacts.maybe_read_json(job_id, "review_template_review") is None
     assert artifacts.maybe_read_json(job_id, "review_evidence_review") is None
     assert artifacts.maybe_read_json(job_id, "review_draft_review") is None
+    assert not artifacts.artifact_path(job_id, "evidence_plan").exists()
     assert not artifacts.artifact_path(job_id, "generated_sections").exists()
     assert not artifacts.artifact_path(job_id, "coverage_report").exists()
     assert not artifacts.artifact_path(job_id, "final_sop.docx").exists()
@@ -153,10 +196,12 @@ def test_contextual_analyze_records_chunk_and_retrieval_metadata(tmp_path):
     job_id = artifacts.create_job(ReviewSettings())
     seed_uploads(artifacts, job_id)
 
-    plan = service.analyze(job_id)
+    service.analyze(job_id)
+    service.approve_gate(job_id, GateName.TEMPLATE, ReviewDecisionRequest())
+    plan = artifacts.read_json(job_id, "evidence_plan")
 
-    assert plan.retrieval_metadata.chunk_method == "contextual"
-    assert plan.retrieval_metadata.retrieval_mode == "sparse_only"
+    assert plan["retrieval_metadata"]["chunk_method"] == "contextual"
+    assert plan["retrieval_metadata"]["retrieval_mode"] == "sparse_only"
     source_docs = artifacts.read_json(job_id, "source_docs")["documents"]
     assert source_docs[0]["chunks"][0]["embedding_text"].startswith("Document Context:")
 
@@ -169,6 +214,24 @@ def test_artifact_service_deletes_job_directory(tmp_path):
     artifacts.delete_job(job_id)
 
     assert not artifacts.job_dir(job_id).exists()
+
+
+def test_artifact_service_filters_jobs_by_owner_id(tmp_path):
+    artifacts, _service = make_service(tmp_path)
+    owner_a = "a" * 32
+    owner_b = "b" * 32
+    job_a = artifacts.create_job(ReviewSettings(), owner_id=owner_a)
+    job_b = artifacts.create_job(ReviewSettings(), owner_id=owner_b)
+    legacy_job = artifacts.create_job(ReviewSettings())
+
+    assert [job["job_id"] for job in artifacts.list_jobs(owner_a)] == [job_a]
+    assert [job["job_id"] for job in artifacts.list_jobs(owner_b)] == [job_b]
+    assert {job["job_id"] for job in artifacts.list_jobs()} == {job_a, job_b, legacy_job}
+    artifacts.ensure_job_owner(job_a, owner_a)
+    with pytest.raises(FileNotFoundError):
+        artifacts.ensure_job_owner(job_a, owner_b)
+    with pytest.raises(FileNotFoundError):
+        artifacts.ensure_job_owner(legacy_job, owner_a)
 
 
 def test_artifact_service_cleans_expired_jobs_by_status_mtime(tmp_path):

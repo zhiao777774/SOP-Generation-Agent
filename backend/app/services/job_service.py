@@ -23,10 +23,14 @@ from backend.app.pipeline.schemas import (
     JobStatus,
     JobStatusValue,
     ModelConfig,
+    ReferenceDocument,
     ReviewDecision,
     ReviewDecisionRequest,
     ReviewSettings,
+    SourceDocument,
     StructuredSectionDraft,
+    TemplateStructure,
+    DomainTermSuggestion,
     UploadedFiles,
 )
 from backend.app.planning.evidence_planner import EvidencePlanner
@@ -47,7 +51,7 @@ class JobService:
         self.generator = SectionGenerator()
         self.renderer = DocxRenderer()
 
-    def analyze(self, job_id: str) -> EvidencePlan:
+    def analyze(self, job_id: str) -> TemplateStructure:
         self.artifacts.update_status(
             job_id,
             JobStatusValue.ANALYZING,
@@ -119,23 +123,227 @@ class JobService:
         self.artifacts.write_json(job_id, "source_docs", {"documents": source_docs})
         self.artifacts.write_json(job_id, "reference_docs", {"documents": reference_docs})
         self.artifacts.write_json(job_id, "template_structure", template)
+        self.artifacts.write_json(job_id, "template_section_resolution", template)
+        self.artifacts.write_json(job_id, "template_blocks", {"blocks": template.blocks})
+        self.artifacts.write_json(job_id, "template_section_candidates", {"candidates": template.candidates})
         domain_suggestions = DomainTermSuggester(
             llm_config,
             enabled=self.config.domain_term_llm_enabled,
             confidence_threshold=self.config.domain_term_confidence_threshold,
         ).suggest(source_docs, reference_docs)
         self.artifacts.write_json(job_id, "domain_term_suggestions", {"suggestions": domain_suggestions})
+
+        status = self.artifacts.read_json(job_id, "status", JobStatus)
+        self._auto_or_pending(job_id, status.review_settings, [GateName.TEMPLATE])
+        template_pending = self._pending_template_gate(job_id, status.review_settings)
+        if template_pending:
+            self.artifacts.update_status(
+                job_id,
+                JobStatusValue.NEEDS_REVIEW,
+                "template_review_ready",
+                0.55,
+                "Template section proposal is ready for review.",
+                pending_gates=template_pending,
+            )
+            return template
+
+        self.artifacts.write_json(job_id, "approved_template_sections", template)
+        self._build_and_store_evidence_plan(job_id, template)
+        self._auto_or_pending(job_id, status.review_settings, [GateName.EVIDENCE])
+        pending = self._pending_pre_generation_gates(job_id, status.review_settings)
+        self.artifacts.update_status(
+            job_id,
+            JobStatusValue.NEEDS_REVIEW if pending else JobStatusValue.UPLOADED,
+            "analysis_ready",
+            0.65,
+            "Analysis and evidence planning completed.",
+            pending_gates=pending,
+        )
+        return template
+
+    def refine_template_sections(self, job_id: str, feedback: str) -> TemplateStructure:
+        template = self.artifacts.read_json(job_id, "template_structure", TemplateStructure)
+        refined = SectionRefiner(self._provider_config(job_id, "llm")).refine(
+            file_name=template.file_name,
+            template_id=template.template_id,
+            blocks=template.blocks,
+            candidates=template.candidates,
+            fallback_sections=template.sections,
+            feedback=feedback,
+        )
+        self.artifacts.write_json(job_id, "template_structure", refined)
+        self.artifacts.write_json(job_id, "template_section_resolution", refined)
+        self.artifacts.delete_artifacts(
+            job_id,
+            [
+                "review_template_review",
+                "review_evidence_review",
+                "review_draft_review",
+                "evidence_plan",
+                "generated_sections",
+                "coverage_report",
+                "provenance_report",
+                "debug_report",
+                "tokenization_report",
+                "final_sop.docx",
+            ],
+        )
+        self.artifacts.append_log(
+            job_id,
+            "template_refinement",
+            "Template section proposal refined from reviewer feedback.",
+            f"feedback_intent={refined.feedback_intent}; mode={refined.refinement_mode}",
+        )
+        status = self.artifacts.read_json(job_id, "status", JobStatus)
+        pending = self._pending_template_gate(job_id, status.review_settings)
+        self.artifacts.update_status(
+            job_id,
+            JobStatusValue.NEEDS_REVIEW if pending else JobStatusValue.UPLOADED,
+            "template_review_ready",
+            0.55,
+            "Template section proposal was updated from feedback.",
+            pending_gates=pending,
+        )
+        return refined
+
+    def replan_evidence(self, job_id: str, request: ReviewDecisionRequest) -> EvidencePlan:
+        if self.artifacts.maybe_read_json(job_id, "review_evidence_review"):
+            raise PermissionError("Evidence plan is already approved; re-plan requires reopening review.")
+        template = (
+            self.artifacts.maybe_read_json(job_id, "approved_template_sections", TemplateStructure)
+            or self.artifacts.read_json(job_id, "template_section_resolution", TemplateStructure)
+        )
+        self.artifacts.delete_artifacts(
+            job_id,
+            [
+                "review_evidence_review",
+                "review_draft_review",
+                "generated_sections",
+                "coverage_report",
+                "provenance_report",
+                "debug_report",
+                "tokenization_report",
+                "final_sop.docx",
+            ],
+        )
+        self.artifacts.append_log(
+            job_id,
+            "evidence_replan",
+            "Evidence plan replanned from reviewer feedback.",
+            f"global_feedback={request.global_feedback}; per_section={request.per_section_feedback}",
+        )
+        evidence_plan = self._build_and_store_evidence_plan(
+            job_id,
+            template,
+            global_feedback=request.global_feedback,
+            section_feedback=request.per_section_feedback,
+        )
+        status = self.artifacts.read_json(job_id, "status", JobStatus)
+        pending = self._pending_pre_generation_gates(job_id, status.review_settings)
+        self.artifacts.update_status(
+            job_id,
+            JobStatusValue.NEEDS_REVIEW if pending else JobStatusValue.UPLOADED,
+            "analysis_ready",
+            0.65,
+            "Evidence plan was updated from feedback.",
+            pending_gates=pending,
+        )
+        return evidence_plan
+
+    def approve_gate(self, job_id: str, gate: GateName, request: ReviewDecisionRequest) -> ReviewDecision:
+        decision = ReviewDecision(
+            gate=gate,
+            auto_approved=False,
+            global_feedback=request.global_feedback,
+            per_section_feedback=request.per_section_feedback,
+        )
+        status = self.artifacts.read_json(job_id, "status", JobStatus)
+        if gate == GateName.TEMPLATE:
+            self.artifacts.write_json(job_id, f"review_{gate.value}", decision)
+            self.artifacts.append_log(job_id, gate.value, "Template section proposal approved by user.")
+            template = self.artifacts.read_json(job_id, "template_section_resolution", TemplateStructure)
+            self.artifacts.write_json(job_id, "approved_template_sections", template)
+            self.artifacts.delete_artifacts(
+                job_id,
+                [
+                    "review_evidence_review",
+                    "review_draft_review",
+                    "evidence_plan",
+                    "generated_sections",
+                    "coverage_report",
+                    "provenance_report",
+                    "debug_report",
+                    "tokenization_report",
+                    "final_sop.docx",
+                ],
+            )
+            self._build_and_store_evidence_plan(job_id, template)
+            self._auto_or_pending(job_id, status.review_settings, [GateName.EVIDENCE])
+            pending = self._pending_pre_generation_gates(job_id, status.review_settings)
+            status_value = JobStatusValue.NEEDS_REVIEW if pending else JobStatusValue.UPLOADED
+            self.artifacts.update_status(
+                job_id,
+                status_value,
+                "analysis_ready",
+                0.65,
+                "Template approved and evidence planning completed.",
+                pending_gates=pending,
+            )
+        elif gate == GateName.EVIDENCE:
+            self.artifacts.write_json(job_id, f"review_{gate.value}", decision)
+            self.artifacts.append_log(job_id, gate.value, "Evidence plan approved by user.")
+            pending = self._pending_pre_generation_gates(job_id, status.review_settings)
+            self.artifacts.update_status(
+                job_id,
+                JobStatusValue.NEEDS_REVIEW if pending else JobStatusValue.UPLOADED,
+                "review_updated",
+                status.progress,
+                "Evidence review decision recorded.",
+                pending_gates=pending,
+            )
+        elif gate == GateName.DRAFT:
+            self.artifacts.write_json(job_id, f"review_{gate.value}", decision)
+            self.artifacts.append_log(job_id, gate.value, "Draft approved by user.")
+            self.artifacts.update_status(
+                job_id,
+                JobStatusValue.COMPLETED,
+                "completed",
+                1.0,
+                "Draft approved and final artifacts are ready.",
+                pending_gates=[],
+            )
+        return decision
+
+    def _build_and_store_evidence_plan(
+        self,
+        job_id: str,
+        template: TemplateStructure,
+        global_feedback: str = "",
+        section_feedback: Dict[str, str] = None,
+    ) -> EvidencePlan:
+        source_docs = [
+            SourceDocument(**document)
+            for document in self.artifacts.read_json(job_id, "source_docs")["documents"]
+        ]
+        reference_docs = [
+            ReferenceDocument(**document)
+            for document in self.artifacts.read_json(job_id, "reference_docs")["documents"]
+        ]
+        domain_suggestions = self.artifacts.maybe_read_json(job_id, "domain_term_suggestions") or {"suggestions": []}
+        parsed_suggestions = [
+            suggestion if isinstance(suggestion, DomainTermSuggestion) else DomainTermSuggestion(**suggestion)
+            for suggestion in domain_suggestions.get("suggestions", [])
+        ]
         temporary_terms = {
-            suggestion.term: max(suggestion.confidence, 1.0)
-            for suggestion in domain_suggestions
+            suggestion.term: max(float(suggestion.confidence), 1.0)
+            for suggestion in parsed_suggestions
             if suggestion.suggested_scope in {"temporary", "candidate_permanent"}
         }
-
         self.artifacts.update_status(
             job_id,
             JobStatusValue.ANALYZING,
             "plan_evidence",
-            0.55,
+            0.58,
             "Planning section-level source and reference evidence.",
         )
         evidence_planner = EvidencePlanner(
@@ -158,7 +366,7 @@ class JobService:
                 domain_token_extraction=self.config.domain_token_extraction,
                 temporary_terms=temporary_terms,
             ),
-            domain_term_suggestions=domain_suggestions,
+            domain_term_suggestions=parsed_suggestions,
         )
         evidence_plan = evidence_planner.build(
             job_id,
@@ -172,6 +380,8 @@ class JobService:
                 progress,
                 message,
             ),
+            global_feedback=global_feedback,
+            section_feedback=section_feedback or {},
         )
         self.artifacts.write_json(job_id, "evidence_plan", evidence_plan)
         self.artifacts.write_json(
@@ -179,52 +389,7 @@ class JobService:
             "tokenization_report",
             evidence_plan.retrieval_metadata.tokenization_report,
         )
-
-        status = self.artifacts.read_json(job_id, "status", JobStatus)
-        self._auto_or_pending(job_id, status.review_settings, [GateName.TEMPLATE, GateName.EVIDENCE])
-        pending = self._pending_pre_generation_gates(job_id, status.review_settings)
-        self.artifacts.update_status(
-            job_id,
-            JobStatusValue.NEEDS_REVIEW if pending else JobStatusValue.UPLOADED,
-            "analysis_ready",
-            0.65,
-            "Analysis and evidence planning completed.",
-            pending_gates=pending,
-        )
         return evidence_plan
-
-    def approve_gate(self, job_id: str, gate: GateName, request: ReviewDecisionRequest) -> ReviewDecision:
-        decision = ReviewDecision(
-            gate=gate,
-            auto_approved=False,
-            global_feedback=request.global_feedback,
-            per_section_feedback=request.per_section_feedback,
-        )
-        self.artifacts.write_json(job_id, f"review_{gate.value}", decision)
-        self.artifacts.append_log(job_id, gate.value, "Review gate approved by user.")
-
-        status = self.artifacts.read_json(job_id, "status", JobStatus)
-        if gate in {GateName.TEMPLATE, GateName.EVIDENCE}:
-            pending = self._pending_pre_generation_gates(job_id, status.review_settings)
-            status_value = JobStatusValue.NEEDS_REVIEW if pending else JobStatusValue.UPLOADED
-            self.artifacts.update_status(
-                job_id,
-                status_value,
-                "review_updated",
-                status.progress,
-                "Review decision recorded.",
-                pending_gates=pending,
-            )
-        elif gate == GateName.DRAFT:
-            self.artifacts.update_status(
-                job_id,
-                JobStatusValue.COMPLETED,
-                "completed",
-                1.0,
-                "Draft approved and final artifacts are ready.",
-                pending_gates=[],
-            )
-        return decision
 
     def generate(self, job_id: str, profile: GenerationProfile, global_feedback: str = "") -> GenerationResult:
         status = self.artifacts.read_json(job_id, "status", JobStatus)
@@ -309,6 +474,10 @@ class JobService:
                 "source_docs",
                 "reference_docs",
                 "template_structure",
+                "template_section_resolution",
+                "template_blocks",
+                "template_section_candidates",
+                "approved_template_sections",
                 "evidence_plan",
                 "review_template_review",
                 "review_evidence_review",
@@ -348,9 +517,19 @@ class JobService:
         pending = []
         if settings.template_review_enabled and not self.artifacts.maybe_read_json(job_id, "review_template_review"):
             pending.append(GateName.TEMPLATE)
-        if settings.evidence_review_enabled and not self.artifacts.maybe_read_json(job_id, "review_evidence_review"):
+        has_evidence_plan = self.artifacts.maybe_read_json(job_id, "evidence_plan") is not None
+        if (
+            settings.evidence_review_enabled
+            and has_evidence_plan
+            and not self.artifacts.maybe_read_json(job_id, "review_evidence_review")
+        ):
             pending.append(GateName.EVIDENCE)
         return pending
+
+    def _pending_template_gate(self, job_id: str, settings: ReviewSettings) -> List[GateName]:
+        if settings.template_review_enabled and not self.artifacts.maybe_read_json(job_id, "review_template_review"):
+            return [GateName.TEMPLATE]
+        return []
 
     def _pending_draft_gate(self, job_id: str, settings: ReviewSettings) -> List[GateName]:
         if settings.draft_review_enabled and not self.artifacts.maybe_read_json(job_id, "review_draft_review"):
