@@ -44,10 +44,15 @@ Runtime provider URLs and secrets are configured at service startup through env 
 - `SOP_FRONTEND_DIST`
 - `SOP_JOB_RETENTION_DAYS`: job artifact retention window. Default: `30`. Use `0` to disable TTL cleanup.
 - `SOP_JOB_CLEANUP_INTERVAL_SECONDS`: periodic cleanup interval while the service is running. Default: `3600`. Use `0` to disable the background cleanup loop.
+- `SOP_CLIENT_COOKIE_NAME`: anonymous browser owner cookie name. Default: `sop_client_id`.
+- `SOP_CLIENT_COOKIE_MAX_AGE_DAYS`: owner cookie lifetime. Leave empty to follow `SOP_JOB_RETENTION_DAYS`.
+- `SOP_CLIENT_COOKIE_SECURE`: set `true` when serving over HTTPS. Default: `false`.
+- `SOP_CLIENT_COOKIE_SAMESITE`: `lax`, `strict`, or `none`. Default: `lax`.
+- `SOP_CORS_ORIGINS`: comma-separated allowed origins when running frontend/backend separately. Default: `*`.
 - `SOP_CHUNK_SIZE`: chunk size in characters for source/reference text. Default: `900`.
 - `SOP_CHUNK_OVERLAP`: character overlap between chunks. Default: `120`.
 - `SOP_CHUNK_METHOD`: `vanilla`, `contextual`, or `anthropic`. Default: `vanilla`.
-- `SOP_SECTION_DETECTION_MODE`: `rules` or `rules_llm`. Default: `rules`.
+- `SOP_SECTION_DETECTION_MODE`: `rules` or `rules_llm`. Default: `rules_llm`.
 - `SOP_RETRIEVAL_MODE`: `dense_sparse_rrf` or `sparse_only`. Default: `dense_sparse_rrf`.
 - `SOP_RRF_K`: reciprocal-rank-fusion constant. Default: `60`.
 - `SOP_SOURCE_TOP_K`: max source evidence candidates per section before threshold filtering. Default: `6`.
@@ -98,9 +103,10 @@ docker compose up --build
 
 1. Create a job with review settings and selected generation model.
 2. Upload source PDFs, optional reference files, and one DOCX template.
-3. Analyze to produce `evidence_plan.json`.
-4. Approve template/evidence gates or let disabled gates auto-approve.
-5. Generate structured section drafts with paragraph-level provenance.
-6. Review, regenerate sections if needed, approve draft, and download `final_sop.docx` plus reports.
+3. Analyze to produce a reviewable `template_section_resolution.json`.
+4. Approve the template section proposal, or apply feedback to refine it first.
+5. Evidence planning then produces `evidence_plan.json`; approve it or re-plan from feedback.
+6. Generate structured section drafts with paragraph-level provenance.
+7. Review, regenerate sections if needed, approve draft, and download `final_sop.docx` plus reports.
 
 Artifacts are stored under `/data/jobs/{job_id}` by default. Expired jobs are cleaned once on service startup, during periodic background cleanup, and before the job list API returns results.

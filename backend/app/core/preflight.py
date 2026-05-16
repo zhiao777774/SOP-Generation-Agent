@@ -30,6 +30,7 @@ def run_preflight(config: AppConfig) -> PreflightReport:
     _check_ocr_provider(config, errors, warnings)
     _check_pipeline_settings(config, errors)
     _check_tokenizer_settings(config, errors)
+    _check_client_cookie_settings(config, errors)
     _check_retention(config, warnings)
 
     if errors:
@@ -165,3 +166,16 @@ def _check_retention(config: AppConfig, warnings: List[str]) -> None:
         warnings.append("SOP_JOB_RETENTION_DAYS=0; expired job cleanup is disabled.")
     if config.job_retention_days > 0 and config.job_cleanup_interval_seconds == 0:
         warnings.append("SOP_JOB_CLEANUP_INTERVAL_SECONDS=0; expired jobs clean on startup and job listing only.")
+
+
+def _check_client_cookie_settings(config: AppConfig, errors: List[str]) -> None:
+    if not config.client_cookie_name:
+        errors.append("SOP_CLIENT_COOKIE_NAME must not be empty")
+    if any(char in config.client_cookie_name for char in " ;,="):
+        errors.append("SOP_CLIENT_COOKIE_NAME must not contain spaces, semicolons, commas, or equals signs")
+    if config.client_cookie_samesite not in {"lax", "strict", "none"}:
+        errors.append("SOP_CLIENT_COOKIE_SAMESITE must be one of: lax, strict, none")
+    if config.client_cookie_samesite == "none" and not config.client_cookie_secure:
+        errors.append("SOP_CLIENT_COOKIE_SECURE=true is required when SOP_CLIENT_COOKIE_SAMESITE=none")
+    if not config.cors_origins:
+        errors.append("SOP_CORS_ORIGINS must define at least one origin")

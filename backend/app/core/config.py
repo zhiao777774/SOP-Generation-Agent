@@ -44,6 +44,11 @@ class AppConfig:
     llm: ProviderConfig
     embedding: ProviderConfig
     ocr: ProviderConfig
+    client_cookie_name: str = "sop_client_id"
+    client_cookie_max_age_days: float = 30
+    client_cookie_secure: bool = False
+    client_cookie_samesite: str = "lax"
+    cors_origins: tuple[str, ...] = ("*",)
 
 
 def _default_project_path(relative_path: str) -> Path:
@@ -107,16 +112,26 @@ def load_config() -> AppConfig:
     data_root = Path(os.getenv("SOP_DATA_ROOT", "/data/jobs"))
     frontend_dist = _path_from_env("SOP_FRONTEND_DIST", _default_project_path("frontend/dist"))
     models_path = _path_from_env("SOP_MODELS_PATH", _default_project_path("backend/models.json"))
+    job_retention_days = max(_float_from_env("SOP_JOB_RETENTION_DAYS", 30), 0)
+    cookie_max_age_days = max(
+        _float_from_env("SOP_CLIENT_COOKIE_MAX_AGE_DAYS", job_retention_days),
+        0,
+    )
+    cors_origins = tuple(
+        origin.strip()
+        for origin in os.getenv("SOP_CORS_ORIGINS", "*").split(",")
+        if origin.strip()
+    ) or ("*",)
     return AppConfig(
         data_root=data_root,
         frontend_dist=frontend_dist,
         models_path=models_path,
-        job_retention_days=max(_float_from_env("SOP_JOB_RETENTION_DAYS", 30), 0),
+        job_retention_days=job_retention_days,
         job_cleanup_interval_seconds=max(_float_from_env("SOP_JOB_CLEANUP_INTERVAL_SECONDS", 3600), 0),
         chunk_size=max(_int_from_env("SOP_CHUNK_SIZE", 900), 1),
         chunk_overlap=max(_int_from_env("SOP_CHUNK_OVERLAP", 120), 0),
         chunk_method=os.getenv("SOP_CHUNK_METHOD", "vanilla").strip().lower(),
-        section_detection_mode=os.getenv("SOP_SECTION_DETECTION_MODE", "rules").strip().lower(),
+        section_detection_mode=os.getenv("SOP_SECTION_DETECTION_MODE", "rules_llm").strip().lower(),
         retrieval_mode=os.getenv("SOP_RETRIEVAL_MODE", "dense_sparse_rrf").strip().lower(),
         rrf_k=max(_int_from_env("SOP_RRF_K", 60), 1),
         source_top_k=max(_int_from_env("SOP_SOURCE_TOP_K", 6), 0),
@@ -159,4 +174,9 @@ def load_config() -> AppConfig:
             model=os.getenv("SOP_OCR_MODEL"),
             timeout_seconds=float(os.getenv("SOP_OCR_TIMEOUT_SECONDS", "120")),
         ),
+        client_cookie_name=os.getenv("SOP_CLIENT_COOKIE_NAME", "sop_client_id").strip() or "sop_client_id",
+        client_cookie_max_age_days=cookie_max_age_days,
+        client_cookie_secure=_bool_from_env("SOP_CLIENT_COOKIE_SECURE", False),
+        client_cookie_samesite=os.getenv("SOP_CLIENT_COOKIE_SAMESITE", "lax").strip().lower(),
+        cors_origins=cors_origins,
     )

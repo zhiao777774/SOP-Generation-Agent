@@ -96,3 +96,28 @@ def test_retrieval_tuning_loads_from_env(monkeypatch):
     assert config.domain_token_extraction is False
     assert config.domain_term_llm_enabled is True
     assert config.domain_term_confidence_threshold == 0.9
+
+
+def test_client_cookie_settings_load_from_env(monkeypatch):
+    monkeypatch.setenv("SOP_JOB_RETENTION_DAYS", "14")
+    monkeypatch.delenv("SOP_CLIENT_COOKIE_MAX_AGE_DAYS", raising=False)
+    config = load_config()
+
+    assert config.client_cookie_name == "sop_client_id"
+    assert config.client_cookie_max_age_days == 14
+    assert config.client_cookie_secure is False
+    assert config.client_cookie_samesite == "lax"
+    assert config.cors_origins == ("*",)
+
+    monkeypatch.setenv("SOP_CLIENT_COOKIE_NAME", "custom_owner")
+    monkeypatch.setenv("SOP_CLIENT_COOKIE_MAX_AGE_DAYS", "7")
+    monkeypatch.setenv("SOP_CLIENT_COOKIE_SECURE", "true")
+    monkeypatch.setenv("SOP_CLIENT_COOKIE_SAMESITE", "none")
+    monkeypatch.setenv("SOP_CORS_ORIGINS", "http://localhost:5173,https://sop.example")
+    config = load_config()
+
+    assert config.client_cookie_name == "custom_owner"
+    assert config.client_cookie_max_age_days == 7
+    assert config.client_cookie_secure is True
+    assert config.client_cookie_samesite == "none"
+    assert config.cors_origins == ("http://localhost:5173", "https://sop.example")

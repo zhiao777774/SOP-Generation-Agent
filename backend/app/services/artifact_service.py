@@ -26,7 +26,7 @@ class ArtifactService:
         self.data_root = data_root
         self.data_root.mkdir(parents=True, exist_ok=True)
 
-    def create_job(self, review_settings: ReviewSettings) -> str:
+    def create_job(self, review_settings: ReviewSettings, owner_id: Optional[str] = None) -> str:
         job_id = uuid4().hex
         for subdir in [
             "uploads/source",
@@ -43,6 +43,7 @@ class ArtifactService:
             JobStatus(
                 job_id=job_id,
                 status=JobStatusValue.PENDING,
+                owner_id=owner_id,
                 current_step="created",
                 progress=0,
                 message="Job created.",
@@ -67,6 +68,15 @@ class ArtifactService:
 
     def ensure_job(self, job_id: str) -> None:
         if not self.job_dir(job_id).exists():
+            raise FileNotFoundError(f"Unknown job_id: {job_id}")
+
+    def owner_id(self, job_id: str) -> Optional[str]:
+        status = self.read_json(job_id, "status", JobStatus)
+        return status.owner_id
+
+    def ensure_job_owner(self, job_id: str, owner_id: str) -> None:
+        self.ensure_job(job_id)
+        if self.owner_id(job_id) != owner_id:
             raise FileNotFoundError(f"Unknown job_id: {job_id}")
 
     def delete_job(self, job_id: str) -> None:
@@ -221,7 +231,7 @@ class ArtifactService:
             result[folder] = [str(path.relative_to(self.job_dir(job_id))) for path in root.rglob("*") if path.is_file()]
         return result
 
-    def list_jobs(self) -> List[Dict]:
+    def list_jobs(self, owner_id: Optional[str] = None) -> List[Dict]:
         if not self.data_root.exists():
             return []
         jobs = []
@@ -229,6 +239,8 @@ class ArtifactService:
             try:
                 status = json.loads(status_path.read_text(encoding="utf-8"))
             except Exception:
+                continue
+            if owner_id is not None and status.get("owner_id") != owner_id:
                 continue
             job_dir = status_path.parent
             uploaded_path = job_dir / "uploaded_files.json"

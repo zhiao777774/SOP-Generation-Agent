@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
@@ -268,3 +269,20 @@ def test_preflight_rejects_invalid_ckiptagger_settings(tmp_path):
     assert "SOP_DOMAIN_DICT_PATH does not exist" in str(exc.value)
     assert "SOP_JIEBA_DICT_PATH does not exist" in str(exc.value)
     assert "SOP_CKIPTAGGER_DATA_DIR does not exist" in str(exc.value)
+
+
+def test_preflight_rejects_invalid_client_cookie_settings(tmp_path):
+    config = replace(
+        make_config(tmp_path),
+        client_cookie_name="bad cookie",
+        client_cookie_samesite="none",
+        client_cookie_secure=False,
+        cors_origins=(),
+    )
+
+    with pytest.raises(PreflightError) as exc:
+        run_preflight(config)
+
+    assert "SOP_CLIENT_COOKIE_NAME must not contain" in str(exc.value)
+    assert "SOP_CLIENT_COOKIE_SECURE=true is required" in str(exc.value)
+    assert "SOP_CORS_ORIGINS must define at least one origin" in str(exc.value)
