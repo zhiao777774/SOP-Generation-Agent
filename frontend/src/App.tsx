@@ -48,6 +48,37 @@ type EvidenceSection = {
   warnings: string[];
 };
 
+type TemplateSection = {
+  section_id: string;
+  title: string;
+  level: number;
+  source_block_ids?: string[];
+  confidence?: number;
+  operation?: string;
+  reason?: string;
+  warnings?: string[];
+};
+
+type TemplateBlock = {
+  block_id: string;
+  text: string;
+  style_name?: string;
+  source_type: string;
+  order_index: number;
+  metadata?: Record<string, string>;
+};
+
+type TemplateSectionResolution = {
+  file_name: string;
+  sections: TemplateSection[];
+  blocks?: TemplateBlock[];
+  warnings: string[];
+  refinement_suggestions?: { operation: string; title?: string; target_section_id?: string; reason: string }[];
+  refinement_mode?: string;
+  feedback_intent?: string;
+  resolution_id?: string;
+};
+
 type DomainTermSuggestion = {
   term: string;
   category: string;
@@ -58,11 +89,7 @@ type DomainTermSuggestion = {
 };
 
 type EvidencePlan = {
-  template: {
-    file_name: string;
-    sections: { section_id: string; title: string; level: number }[];
-    refinement_suggestions?: { operation: string; title?: string; target_section_id?: string; reason: string }[];
-  };
+  template: TemplateSectionResolution;
   sections: EvidenceSection[];
   warnings: string[];
   retrieval_metadata?: {
@@ -101,6 +128,7 @@ type CatalogModel = { id: string; name: string; provider: string; contextWindow?
 type StepState = "locked" | "ready" | "running" | "pending" | "done" | "auto";
 type ToastAction = "draft_review" | "downloads";
 type ToastMessage = { id: number; title: string; message: string; action?: ToastAction };
+type EvidenceFilter = "all" | "warnings" | "no_source" | "reference_heavy" | "needs_feedback";
 
 const API = "";
 
@@ -108,6 +136,7 @@ export default function App() {
   const [jobId, setJobId] = useState("");
   const [status, setStatus] = useState<JobStatus | null>(null);
   const [evidencePlan, setEvidencePlan] = useState<EvidencePlan | null>(null);
+  const [templateResolution, setTemplateResolution] = useState<TemplateSectionResolution | null>(null);
   const [draft, setDraft] = useState<GenerationResult | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [jobs, setJobs] = useState<JobSummary[]>([]);
@@ -115,6 +144,7 @@ export default function App() {
   const [sourceFiles, setSourceFiles] = useState<FileList | null>(null);
   const [referenceFiles, setReferenceFiles] = useState<FileList | null>(null);
   const [templateFile, setTemplateFile] = useState<File | null>(null);
+  const [uploadFormKey, setUploadFormKey] = useState(0);
   const [reviewSettings, setReviewSettings] = useState({
     template_review_enabled: true,
     evidence_review_enabled: true,
@@ -147,7 +177,7 @@ export default function App() {
   }, [evidencePlan]);
 
   useEffect(() => {
-    fetch(`${API}/api/models`)
+    apiFetch("/api/models")
       .then((response) => (response.ok ? response.json() : { models: [] }))
       .then((payload) => {
         const nextModels = payload.models || [];
@@ -173,7 +203,10 @@ export default function App() {
     if (!status || status.current_step === lastStatusStepRef.current) return;
     lastStatusStepRef.current = status.current_step;
     if (status.current_step === "analysis_ready") {
-      showToast("Analysis complete", "Review the detected template sections and planned evidence before generating the draft.");
+      showToast("Evidence planning complete", "Review the planned evidence before generating the draft.");
+    }
+    if (status.current_step === "template_review_ready") {
+      showToast("Template sections ready", "Review the section proposal, apply feedback if needed, then approve it.");
     }
     if (status.current_step === "draft_ready") {
       showToast("Draft generated", "Review the draft below, inspect provenance if needed, then approve the draft.", "draft_review");
@@ -186,16 +219,20 @@ export default function App() {
   async function refresh(nextJobId = jobId) {
     if (!nextJobId) return;
     const [statusResponse, logsResponse] = await Promise.all([
-      fetch(`${API}/api/jobs/${nextJobId}/status`),
-      fetch(`${API}/api/jobs/${nextJobId}/logs`)
+      apiFetch(`/api/jobs/${nextJobId}/status`),
+      apiFetch(`/api/jobs/${nextJobId}/logs`)
     ]);
+    if (statusResponse.status === 404) {
+      handleJobAccessLost();
+      return;
+    }
     if (statusResponse.ok) setStatus(await statusResponse.json());
     if (logsResponse.ok) setLogs((await logsResponse.json()).logs);
     await loadArtifacts(nextJobId);
   }
 
   async function loadJobs() {
-    const response = await fetch(`${API}/api/jobs`);
+    const response = await apiFetch("/api/jobs");
     if (response.ok) {
       const payload = await response.json();
       setJobs(payload.jobs || []);
@@ -204,19 +241,61 @@ export default function App() {
   }
 
   async function loadArtifacts(nextJobId = jobId) {
-    const evidenceResponse = await fetch(`${API}/api/jobs/${nextJobId}/artifacts/evidence_plan`);
+    const templateResponse = await apiFetch(`/api/jobs/${nextJobId}/artifacts/template_section_resolution`);
+    setTemplateResolution(templateResponse.ok ? await templateResponse.json() : null);
+    const evidenceResponse = await apiFetch(`/api/jobs/${nextJobId}/artifacts/evidence_plan`);
     setEvidencePlan(evidenceResponse.ok ? await evidenceResponse.json() : null);
-    const draftResponse = await fetch(`${API}/api/jobs/${nextJobId}/artifacts/generated_sections`);
+    const draftResponse = await apiFetch(`/api/jobs/${nextJobId}/artifacts/generated_sections`);
     setDraft(draftResponse.ok ? await draftResponse.json() : null);
   }
 
   async function resumeJob(nextJobId: string) {
     setJobId(nextJobId);
     setEvidencePlan(null);
+    setTemplateResolution(null);
     setDraft(null);
     setError("");
     showToast("Job resumed", `Loaded job ${nextJobId.slice(0, 8)} and refreshed its progress.`);
     await refresh(nextJobId);
+  }
+
+  function startNewJob() {
+    setJobId("");
+    setStatus(null);
+    setEvidencePlan(null);
+    setTemplateResolution(null);
+    setDraft(null);
+    setLogs([]);
+    setSourceFiles(null);
+    setReferenceFiles(null);
+    setTemplateFile(null);
+    setTemplateFeedback("");
+    setEvidenceFeedback("");
+    setSectionFeedback({});
+    setRegenerationFeedback({});
+    setError("");
+    setActiveAction("");
+    lastStatusStepRef.current = "";
+    setUploadFormKey((value) => value + 1);
+    showToast("Ready for a new job", "The previous job is still saved in Job History. Upload new files to start another run.");
+  }
+
+  function handleJobAccessLost() {
+    setJobId("");
+    setStatus(null);
+    setEvidencePlan(null);
+    setTemplateResolution(null);
+    setDraft(null);
+    setLogs([]);
+    setSourceFiles(null);
+    setReferenceFiles(null);
+    setTemplateFile(null);
+    setError("");
+    setActiveAction("");
+    lastStatusStepRef.current = "";
+    setUploadFormKey((value) => value + 1);
+    showToast("Job history reset", "This browser no longer has access to that job. Upload files to start a new run.");
+    loadJobs();
   }
 
   async function deleteJob(targetJobId: string, event: MouseEvent<HTMLButtonElement>) {
@@ -225,12 +304,13 @@ export default function App() {
     if (!shouldDelete) return;
 
     await run("Deleting job", async () => {
-      const response = await fetch(`${API}/api/jobs/${targetJobId}`, { method: "DELETE" });
-      if (!response.ok) throw new Error(await response.text());
+      const response = await apiFetch(`/api/jobs/${targetJobId}`, { method: "DELETE" });
+      if (!response.ok) throw new ApiError(response.status, await response.text());
       if (targetJobId === jobId) {
         setJobId("");
         setStatus(null);
         setEvidencePlan(null);
+        setTemplateResolution(null);
         setDraft(null);
         setLogs([]);
       }
@@ -253,6 +333,7 @@ export default function App() {
       const nextJobId = created.job_id;
       setJobId(nextJobId);
       setEvidencePlan(null);
+      setTemplateResolution(null);
       setDraft(null);
       setTemplateFeedback("");
       setEvidenceFeedback("");
@@ -263,8 +344,8 @@ export default function App() {
       Array.from(sourceFiles || []).forEach((file) => form.append("source_files", file));
       Array.from(referenceFiles || []).forEach((file) => form.append("reference_files", file));
       if (templateFile) form.append("template_file", templateFile);
-      const upload = await fetch(`${API}/api/jobs/${nextJobId}/upload`, { method: "POST", body: form });
-      if (!upload.ok) throw new Error(await upload.text());
+      const upload = await apiFetch(`/api/jobs/${nextJobId}/upload`, { method: "POST", body: form });
+      if (!upload.ok) throw new ApiError(upload.status, await upload.text());
       showToast("Files uploaded", "Starting analysis automatically.");
       const nextStatus = await postJson(`/api/jobs/${nextJobId}/analyze?background=true`, {});
       setStatus(nextStatus);
@@ -272,7 +353,11 @@ export default function App() {
       await refresh(nextJobId);
       await loadJobs();
     } catch (err) {
-      setError(String(err));
+      if (err instanceof ApiError && err.status === 404) {
+        handleJobAccessLost();
+      } else {
+        setError(String(err));
+      }
     } finally {
       setBusy(false);
       setActiveAction("");
@@ -280,45 +365,78 @@ export default function App() {
   }
 
   async function analyze() {
-    await run("Analyzing uploaded files and planning evidence", async () => {
+    await run("Analyzing uploaded files and resolving template sections", async () => {
       const nextStatus = await postJson(`/api/jobs/${jobId}/analyze?background=true`, {});
       setStatus(nextStatus);
-      showToast("Analysis started", "The system is preparing template sections and evidence for review.");
+      showToast("Analysis started", "The system is preparing the template section proposal for review.");
       await refresh();
+    });
+  }
+
+  async function refineTemplateSections() {
+    await run("Refining template sections", async () => {
+      showToast("Refining sections", "The model is applying your feedback to the section proposal.");
+      const result = await postJson(`/api/jobs/${jobId}/template/refine`, { feedback: templateFeedback });
+      setTemplateResolution(result);
+      setEvidencePlan(null);
+      setDraft(null);
+      await refresh();
+      showToast("Sections updated", "Review the updated proposal, then approve the section plan.");
+    });
+  }
+
+  async function replanEvidence() {
+    await run("Re-planning evidence", async () => {
+      showToast("Evidence re-plan started", "The system is applying your evidence feedback and rebuilding candidate mappings.");
+      const result = await postJson(`/api/jobs/${jobId}/evidence/replan`, {
+        global_feedback: evidenceFeedback,
+        per_section_feedback: sectionFeedback
+      });
+      setEvidencePlan(result);
+      setDraft(null);
+      await refresh();
+      showToast("Evidence updated", "Review the updated evidence plan before approval.");
     });
   }
 
   async function approve(gate: GateName) {
     await run(`Recording ${gate.replace("_", " ")} decision`, async () => {
-      if (gate === "template_review") showToast("Approving template", "Recording your template section decision.");
-      if (gate === "evidence_review") showToast("Approving evidence", "Recording your evidence plan decision.");
+      if (gate === "template_review") {
+        showToast("Approving template", "Approving the current section proposal and planning evidence.");
+      }
+      if (gate === "evidence_review") showToast("Approving evidence", "Recording your evidence plan decision, then generating the draft.");
       if (gate === "draft_review") showToast("Approving draft", "Finalizing the job and preparing downloads.");
       await postJson(`/api/jobs/${jobId}/review/${gate}`, {
-        global_feedback: gate === "template_review" ? templateFeedback : evidenceFeedback,
+        global_feedback: gate === "evidence_review" ? evidenceFeedback : "",
         per_section_feedback: gate === "evidence_review" ? sectionFeedback : {}
       });
       await refresh();
       if (gate === "template_review") {
-        showToast("Template approved", "Next, review and approve the planned evidence.");
+        showToast("Template approved", "Evidence has been planned from the approved section proposal.");
       } else if (gate === "evidence_review") {
-        showToast("Evidence approved", "You can now generate the SOP draft.");
+        setActiveAction("Generating SOP draft");
+        await generateDraft();
       } else {
         showToast("Draft approved", "The final DOCX and reports are ready to download.", "downloads");
       }
     });
   }
 
+  async function generateDraft() {
+    showToast("Draft generation started", "The system is generating SOP sections from the approved evidence.");
+    const result = await postJson(`/api/jobs/${jobId}/generate`, {
+      generation_profile: { language: generationLanguage, tone: "professional", verbosity: "balanced" },
+      global_feedback: [templateFeedback, evidenceFeedback].filter(Boolean).join(" ")
+    });
+    setDraft(result);
+    await refresh();
+    showToast("Draft generated", "Review the draft below, then approve it when ready.", "draft_review");
+    window.setTimeout(() => scrollToDraftReview(), 60);
+  }
+
   async function generate() {
     await run("Generating SOP draft", async () => {
-      showToast("Draft generation started", "The system is generating SOP sections from the approved evidence.");
-      const result = await postJson(`/api/jobs/${jobId}/generate`, {
-        generation_profile: { language: generationLanguage, tone: "professional", verbosity: "balanced" },
-        global_feedback: [templateFeedback, evidenceFeedback].filter(Boolean).join(" ")
-      });
-      setDraft(result);
-      await refresh();
-      showToast("Draft generated", "Review the draft below, then approve it when ready.", "draft_review");
-      window.setTimeout(() => scrollToDraftReview(), 60);
+      await generateDraft();
     });
   }
 
@@ -342,7 +460,11 @@ export default function App() {
     try {
       await action();
     } catch (err) {
-      setError(String(err));
+      if (err instanceof ApiError && err.status === 404) {
+        handleJobAccessLost();
+      } else {
+        setError(String(err));
+      }
     } finally {
       setBusy(false);
       setActiveAction("");
@@ -381,15 +503,17 @@ export default function App() {
   const pendingGates = status?.pending_gates || [];
   const analysisRunning = status?.status === "analyzing";
   const generationRunning = status?.status === "generating";
-  const preGenerationPending = pendingGates.includes("template_review") || pendingGates.includes("evidence_review");
-  const evidenceApprovalBlockedByTemplate = pendingGates.includes("template_review") && pendingGates.includes("evidence_review");
+  const templateReviewPending = pendingGates.includes("template_review");
+  const evidenceReviewPending = pendingGates.includes("evidence_review");
+  const evidenceReviewUnlocked = Boolean(evidencePlan && !templateReviewPending);
+  const preGenerationPending = pendingGates.includes("template_review") || evidenceReviewPending;
   const canAnalyze = Boolean(jobId) && !analysisRunning && !generationRunning;
   const canGenerate = Boolean(jobId && evidencePlan && !preGenerationPending && !generationRunning);
-  const templateGateState = gateState("template_review", status, evidencePlan, draft);
-  const evidenceGateState = gateState("evidence_review", status, evidencePlan, draft);
+  const templateGateState = gateState("template_review", status, templateResolution, evidencePlan, draft);
+  const evidenceGateState = templateReviewPending ? "locked" : gateState("evidence_review", status, evidencePlan, draft);
   const draftGateState = gateState("draft_review", status, evidencePlan, draft);
   const draftPanelState = draft ? draftGateState : generationRunning ? "running" : canGenerate ? "ready" : "locked";
-  const currentTask = getCurrentTask(status, evidencePlan, draft);
+  const currentTask = getCurrentTask(status, templateResolution, evidencePlan, draft);
 
   return (
     <main className="app-shell">
@@ -409,7 +533,14 @@ export default function App() {
             <h1>SOP Generation Agent</h1>
             <p>Reviewable SOP drafts with section evidence, staged approvals, and clean DOCX output.</p>
           </div>
-          <div className="job-chip">{jobId ? `Job ${jobId.slice(0, 8)}` : "No active job"}</div>
+          <div className="topbar-actions">
+            <div className="job-chip">{jobId ? `Job ${jobId.slice(0, 8)}` : "No active job"}</div>
+            {jobId && (
+              <button className="secondary-action" type="button" onClick={startNewJob}>
+                Start new job
+              </button>
+            )}
+          </div>
         </header>
 
         {error && <div className="error">{error}</div>}
@@ -442,7 +573,7 @@ export default function App() {
         <div className="workspace">
           <section className="panel upload-panel">
           <h2>1. Upload</h2>
-          <form onSubmit={createAndUpload} className="stack">
+          <form key={uploadFormKey} onSubmit={createAndUpload} className="stack">
             <label>
               Source PDFs
               <input type="file" multiple accept=".pdf,.txt" onChange={(e) => setSourceFiles(e.target.files)} />
@@ -509,11 +640,11 @@ export default function App() {
             <WorkflowStep
               number="1"
               title="Analyze uploaded files"
-              state={analysisRunning ? "running" : evidencePlan ? "done" : jobId ? "ready" : "locked"}
-              description="Parse the PDF/template/reference files and create a section-level evidence plan."
+              state={analysisRunning ? "running" : templateResolution ? "done" : jobId ? "ready" : "locked"}
+              description="Parse the PDF/template/reference files and create a reviewable section proposal."
             >
               <button disabled={busy || !canAnalyze} onClick={analyze}>
-                {evidencePlan ? "Run analysis again" : analysisRunning ? "Analysis running" : "Start analysis manually"}
+                {templateResolution ? "Run analysis again" : analysisRunning ? "Analysis running" : "Start analysis manually"}
               </button>
             </WorkflowStep>
 
@@ -523,21 +654,36 @@ export default function App() {
               state={templateGateState}
               description="Confirm these are the sections that should be filled in the SOP template."
             >
-              {evidencePlan ? (
+              {templateResolution ? (
                 <>
-                  <TemplateSectionList sections={evidencePlan.template.sections} />
-                  <TemplateSuggestionList suggestions={evidencePlan.template.refinement_suggestions || []} />
-                  <label className="wide-label">
-                    Template section correction feedback
-                    <textarea
-                      value={templateFeedback}
-                      onChange={(e) => setTemplateFeedback(e.target.value)}
-                      placeholder="Example: split Fault Symptoms and Initial Diagnosis, remove fixed template sections, or rename a section."
+                  <TemplateResolutionSummary resolution={templateResolution} />
+                  {evidenceReviewUnlocked ? (
+                    <ApprovedTemplateSectionsSummary
+                      sections={templateResolution.sections}
+                      blocks={templateResolution.blocks || []}
                     />
-                  </label>
-                  <button disabled={busy || !pendingGates.includes("template_review")} onClick={() => approve("template_review")}>
-                    Approve template sections
-                  </button>
+                  ) : (
+                    <>
+                      <TemplateSectionList sections={templateResolution.sections} blocks={templateResolution.blocks || []} />
+                      <TemplateSuggestionList suggestions={templateResolution.refinement_suggestions || []} />
+                      <label className="wide-label">
+                        Template section correction feedback
+                        <textarea
+                          value={templateFeedback}
+                          onChange={(e) => setTemplateFeedback(e.target.value)}
+                          placeholder="Example: split Fault Symptoms and Initial Diagnosis. If you want replacement, say only keep/fill these sections."
+                        />
+                      </label>
+                      <div className="button-row">
+                        <button disabled={busy || !templateFeedback.trim() || !pendingGates.includes("template_review")} onClick={refineTemplateSections}>
+                          Apply feedback to sections
+                        </button>
+                        <button disabled={busy || !pendingGates.includes("template_review")} onClick={() => approve("template_review")}>
+                          Approve current section plan
+                        </button>
+                      </div>
+                    </>
+                  )}
                 </>
               ) : (
                 <p className="empty">Run analysis to detect template sections.</p>
@@ -550,96 +696,102 @@ export default function App() {
               state={evidenceGateState}
               description="Check which source chunks and reference records will be used for each SOP section."
             >
-              {evidencePlan ? (
+              {!evidencePlan ? (
+                <p className="empty">Evidence appears after analysis finishes.</p>
+              ) : !evidenceReviewUnlocked ? (
+                <p className="empty">
+                  Approve the detected template sections first. If you add template feedback, the evidence plan will be rebuilt before this step unlocks.
+                </p>
+              ) : (
                 <>
                   <EvidenceSummary sections={evidencePlan.sections} warnings={evidencePlan.warnings} />
                   <EvidencePlanWarnings warnings={evidencePlan.warnings} />
                   <DomainTermSuggestionsPanel metadata={evidencePlan.retrieval_metadata} />
                   <EvidenceReviewGuide />
-                  <EvidencePlanReviewList sections={evidencePlan.sections} metadata={evidencePlan.retrieval_metadata} />
-                  <label className="wide-label">
-                    Evidence and generation feedback
-                    <textarea
-                      value={evidenceFeedback}
-                      onChange={(e) => setEvidenceFeedback(e.target.value)}
-                      placeholder="Example: source PDF is authoritative; references can only fill missing repair experience; do not present field cases as vendor requirements."
-                    />
-                  </label>
-                  <button disabled={busy || !pendingGates.includes("evidence_review") || evidenceApprovalBlockedByTemplate} onClick={() => approve("evidence_review")}>
-                    {evidenceApprovalBlockedByTemplate ? "Approve template sections first" : "Approve evidence plan"}
-                  </button>
+                  <GlobalEvidencePolicy value={evidenceFeedback} onChange={setEvidenceFeedback} />
+                  <EvidencePlanReviewList
+                    sections={evidencePlan.sections}
+                    metadata={evidencePlan.retrieval_metadata}
+                    sectionFeedback={sectionFeedback}
+                    setSectionFeedback={setSectionFeedback}
+                  />
+                  <div className="evidence-action-bar">
+                    <EvidenceActionSummary globalFeedback={evidenceFeedback} sectionFeedback={sectionFeedback} />
+                    <button disabled={busy || !evidenceReviewPending || (!evidenceFeedback.trim() && Object.values(sectionFeedback).every((value) => !value.trim()))} onClick={replanEvidence}>
+                      {evidenceReviewPending ? "Apply evidence feedback and re-plan" : "Evidence plan approved"}
+                    </button>
+                    <button disabled={busy || !evidenceReviewPending} onClick={() => approve("evidence_review")}>
+                      Approve current evidence plan
+                    </button>
+                  </div>
                 </>
-              ) : (
-                <p className="empty">Evidence appears after analysis finishes.</p>
               )}
             </WorkflowStep>
 
-            <WorkflowStep
-              number="4"
-              title="Generate draft"
-              state={generationRunning ? "running" : draft ? "done" : canGenerate ? "ready" : "locked"}
-              description={preGenerationPending ? "Template and evidence review must be approved before draft generation." : "Create the first SOP draft from the reviewed evidence plan."}
-            >
-              <button disabled={busy || !canGenerate} onClick={generate}>Generate SOP draft</button>
-            </WorkflowStep>
           </div>
 
-          {evidencePlan && (
-            <details className="review-detail">
-              <summary>Evidence details by section</summary>
-              <div className="section-list">
-                {evidencePlan.sections.map((section) => (
-                  <EvidenceSectionView
-                    key={section.section_id}
-                    section={section}
-                    feedback={sectionFeedback[section.section_id] || ""}
-                    setFeedback={(value) => setSectionFeedback({ ...sectionFeedback, [section.section_id]: value })}
+          {canGenerate && !draft && (
+            <div className="draft-generation-fallback">
+              <div>
+                <strong>Draft generation is ready</strong>
+                <p>Evidence is approved, but this job does not have a draft yet. This can happen after resuming an older job.</p>
+              </div>
+              <button disabled={busy || !canGenerate} onClick={generate}>Generate draft now</button>
+            </div>
+          )}
+
+          </section>
+
+          <section className={`panel draft-panel ${draftPanelState}`} ref={draftReviewRef}>
+            <div className="panel-heading">
+              <div>
+                <h2>3. Draft Review</h2>
+                <p className="muted">Review generated paragraphs, inspect provenance, regenerate sections, then approve the final draft.</p>
+              </div>
+              {draft && (
+                <div className="panel-heading-actions">
+                  <GateBadge state={draftGateState} label="Draft review" />
+                  <button disabled={busy || !pendingGates.includes("draft_review")} onClick={() => approve("draft_review")}>Approve draft</button>
+                </div>
+              )}
+            </div>
+            {!draft && <p className="empty">Generate a draft to review paragraph-level provenance and regenerate sections.</p>}
+            {draft && jobId && status?.status === "completed" && (
+              <DownloadPanel
+                jobId={jobId}
+                downloadLinksRef={downloadLinksRef}
+              />
+            )}
+            {draft?.sections.map((section) => (
+              <article key={section.section_id} className="draft-section">
+                <div className="draft-section-header">
+                  <h3>{section.title}</h3>
+                  <span>
+                    {section.blocks.length} paragraph{section.blocks.length === 1 ? "" : "s"}
+                    {section.warnings.length ? ` · ${section.warnings.length} warning${section.warnings.length === 1 ? "" : "s"}` : ""}
+                  </span>
+                </div>
+                {section.warnings.map((warning) => <p className="warning" key={warning}>{warning}</p>)}
+                {section.blocks.length === 0 && (
+                  <p className="empty">No generated paragraph for this section. Review the section warning or regenerate after adding guidance.</p>
+                )}
+                {section.blocks.map((block, index) => (
+                  <DraftBlockView
+                    key={block.block_id}
+                    block={block}
+                    index={index}
+                    evidenceById={evidenceById}
                   />
                 ))}
-              </div>
-            </details>
-          )}
+                <label className="wide-label draft-feedback-label">
+                  Section regeneration feedback
+                  <textarea value={regenerationFeedback[section.section_id] || ""} onChange={(e) => setRegenerationFeedback({ ...regenerationFeedback, [section.section_id]: e.target.value })} />
+                </label>
+                <button className="secondary-action draft-regenerate-action" disabled={busy} onClick={() => regenerate(section.section_id)}>Regenerate this section</button>
+              </article>
+            ))}
           </section>
         </div>
-
-        <section className={`panel draft-panel ${draftPanelState}`} ref={draftReviewRef}>
-          <div className="panel-heading">
-            <div>
-              <h2>3. Draft Review</h2>
-              <p className="muted">Review generated paragraphs, inspect provenance, regenerate sections, then approve the final draft.</p>
-            </div>
-          </div>
-          {!draft && <p className="empty">Generate a draft to review paragraph-level provenance and regenerate sections.</p>}
-          {draft && (
-            <div className="draft-approval">
-              <GateBadge state={draftGateState} label="Draft review" />
-              <button disabled={busy || !pendingGates.includes("draft_review")} onClick={() => approve("draft_review")}>Approve draft</button>
-            </div>
-          )}
-          {draft && jobId && (
-            <DownloadPanel
-              jobId={jobId}
-              isCompleted={status?.status === "completed"}
-              downloadLinksRef={downloadLinksRef}
-            />
-          )}
-          {draft?.sections.map((section) => (
-            <article key={section.section_id} className="draft-section">
-              <h3>{section.title}</h3>
-              {section.blocks.map((block) => (
-                <details key={block.block_id} className="draft-block">
-                  <summary>{block.text}</summary>
-                  <EvidenceLinks ids={block.source_chunk_ids.concat(block.reference_item_ids)} evidenceById={evidenceById} />
-                </details>
-              ))}
-              <label className="wide-label">
-                Section regeneration feedback
-                <textarea value={regenerationFeedback[section.section_id] || ""} onChange={(e) => setRegenerationFeedback({ ...regenerationFeedback, [section.section_id]: e.target.value })} />
-              </label>
-              <button disabled={busy} onClick={() => regenerate(section.section_id)}>Regenerate this section</button>
-            </article>
-          ))}
-        </section>
       </div>
     </main>
   );
@@ -671,6 +823,7 @@ function JobSidebar({
             {jobs.length} saved {jobs.length === 1 ? "job" : "jobs"}
             {jobRetentionDays && jobRetentionDays > 0 ? ` · auto-clean after ${formatRetention(jobRetentionDays)}` : ""}
           </p>
+          <p className="muted sidebar-cookie-note">Saved for this browser. Clearing browser data starts a new history.</p>
         </div>
       </div>
 
@@ -742,14 +895,60 @@ function GateBadge({ state, label }: { state: StepState; label?: string }) {
   return <span className={`gate-badge ${state}`}>{label ? `${label}: ${text}` : text}</span>;
 }
 
-function TemplateSectionList({ sections }: { sections: EvidencePlan["template"]["sections"] }) {
+function TemplateResolutionSummary({ resolution }: { resolution: TemplateSectionResolution }) {
+  return (
+    <div className="retrieval-metadata">
+      Section proposal: {resolution.refinement_mode || "rules"} · feedback intent: {resolution.feedback_intent || "guidance"} · {resolution.sections.length} sections
+      {resolution.warnings?.length ? ` · ${resolution.warnings.length} warnings` : ""}
+    </div>
+  );
+}
+
+function ApprovedTemplateSectionsSummary({
+  sections,
+  blocks
+}: {
+  sections: TemplateSection[];
+  blocks: TemplateBlock[];
+}) {
+  return (
+    <details className="approved-template-summary">
+      <summary>
+        <div>
+          <strong>Template section plan approved</strong>
+          <span>{sections.length} sections are now used for evidence planning. Expand to inspect the approved section list.</span>
+        </div>
+      </summary>
+      <TemplateSectionList sections={sections} blocks={blocks} />
+    </details>
+  );
+}
+
+function TemplateSectionList({ sections, blocks }: { sections: TemplateSection[]; blocks: TemplateBlock[] }) {
+  const blockById = Object.fromEntries(blocks.map((block) => [block.block_id, block]));
   return (
     <div className="template-section-list">
       {sections.map((section, index) => (
         <div key={section.section_id} className="template-section-row">
           <span>{index + 1}</span>
-          <strong>{section.title}</strong>
-          <small>Level {section.level}</small>
+          <div className="template-section-main">
+            <strong>{section.title}</strong>
+            {section.reason && (
+              <small className="template-section-meta">
+                {section.operation || "keep"} · {(section.confidence ?? 1).toFixed(2)} · {section.reason}
+              </small>
+            )}
+            {section.source_block_ids?.length ? (
+              <details>
+                <summary>Source template blocks</summary>
+                {section.source_block_ids.map((blockId) => {
+                  const block = blockById[blockId];
+                  return block ? <pre key={blockId}>{block.source_type} · {block.style_name || "no style"} · {block.text}</pre> : <p key={blockId}>{blockId}</p>;
+                })}
+              </details>
+            ) : null}
+          </div>
+          <small className="template-section-level">Level {section.level}</small>
         </div>
       ))}
     </div>
@@ -832,13 +1031,66 @@ function DomainTermSuggestionsPanel({ metadata }: { metadata?: EvidencePlan["ret
   );
 }
 
+function GlobalEvidencePolicy({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  return (
+    <details className="global-evidence-policy" open={Boolean(value.trim())}>
+      <summary>
+        <div>
+          <strong>Overall evidence policy</strong>
+          <span>Optional global guidance applied to every SOP section.</span>
+        </div>
+        <em>{value.trim() ? "Has global note" : "No global note"}</em>
+      </summary>
+      <label className="wide-label compact-label">
+        Global evidence and generation guidance
+        <textarea
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder="Example: source PDF is authoritative; references can only fill missing repair experience; do not present field cases as vendor requirements."
+        />
+      </label>
+    </details>
+  );
+}
+
+function EvidenceActionSummary({
+  globalFeedback,
+  sectionFeedback
+}: {
+  globalFeedback: string;
+  sectionFeedback: Record<string, string>;
+}) {
+  const sectionNotes = Object.values(sectionFeedback).filter((value) => value.trim()).length;
+  return (
+    <div className="evidence-action-summary">
+      <span>
+        Global note: <strong>{globalFeedback.trim() ? "yes" : "no"}</strong>
+      </span>
+      <span>
+        Section notes: <strong>{sectionNotes}</strong>
+      </span>
+    </div>
+  );
+}
+
 function EvidencePlanReviewList({
   sections,
-  metadata
+  metadata,
+  sectionFeedback,
+  setSectionFeedback
 }: {
   sections: EvidenceSection[];
   metadata?: EvidencePlan["retrieval_metadata"];
+  sectionFeedback: Record<string, string>;
+  setSectionFeedback: (value: Record<string, string>) => void;
 }) {
+  const [filter, setFilter] = useState<EvidenceFilter>("all");
+  const [query, setQuery] = useState("");
+  const filteredSections = useMemo(
+    () => sections.filter((section) => evidenceSectionMatches(section, filter, query, sectionFeedback)),
+    [sections, filter, query, sectionFeedback]
+  );
+
   return (
     <div className="evidence-plan-list">
       {metadata && (
@@ -846,20 +1098,108 @@ function EvidencePlanReviewList({
           Retrieval: {metadata.retrieval_mode} · tokenizer: {metadata.tokenizer || "auto"} · normalization: {metadata.script_normalization || "dual"} · chunks: {metadata.chunk_method} · top-k: {metadata.source_top_k}/{metadata.reference_top_k}
         </div>
       )}
-      {sections.map((section) => (
-        <article className="evidence-plan-row" key={section.section_id}>
-          <div className="evidence-plan-header">
-            <strong>{section.section_title}</strong>
-            <small>
-              {section.source_chunks.length} source candidates · {section.reference_items.length} reference candidates · {section.warnings.length} warnings
-            </small>
-          </div>
-          {section.warnings.map((warning) => <p className="warning" key={warning}>{warning}</p>)}
-          <div className="evidence-candidate-grid">
-            <EvidenceCandidateColumn title="Source candidates" items={section.source_chunks} />
-            <EvidenceCandidateColumn title="Reference candidates" items={section.reference_items} />
-          </div>
-        </article>
+      <div className="evidence-review-toolbar">
+        <input
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search section, file, location, or evidence text"
+        />
+        <div className="evidence-filter-pills" aria-label="Evidence filters">
+          {[
+            ["all", "All"],
+            ["warnings", "Warnings"],
+            ["no_source", "No source"],
+            ["reference_heavy", "Reference-heavy"],
+            ["needs_feedback", "With notes"]
+          ].map(([value, label]) => (
+            <button
+              className={filter === value ? "active" : ""}
+              key={value}
+              type="button"
+              onClick={() => setFilter(value as EvidenceFilter)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+      {filteredSections.length === 0 && <p className="empty">No sections match the current evidence filter.</p>}
+      {filteredSections.map((section, index) => (
+        <EvidenceSectionReviewCard
+          key={section.section_id}
+          section={section}
+          openByDefault={index === 0}
+          feedback={sectionFeedback[section.section_id] || ""}
+          setFeedback={(value) => setSectionFeedback({ ...sectionFeedback, [section.section_id]: value })}
+        />
+      ))}
+    </div>
+  );
+}
+
+function EvidenceSectionReviewCard({
+  section,
+  openByDefault,
+  feedback,
+  setFeedback
+}: {
+  section: EvidenceSection;
+  openByDefault: boolean;
+  feedback: string;
+  setFeedback: (value: string) => void;
+}) {
+  const topSource = section.source_chunks[0];
+  const topReference = section.reference_items[0];
+  return (
+    <details className="evidence-plan-row" open={openByDefault || section.warnings.length > 0 || Boolean(feedback.trim())}>
+      <summary className="evidence-plan-summary">
+        <div>
+          <strong>{section.section_title}</strong>
+          <small>
+            {section.source_chunks.length} source · {section.reference_items.length} reference · {section.warnings.length} warning{section.warnings.length === 1 ? "" : "s"}
+          </small>
+        </div>
+        <div className="evidence-topline">
+          {topSource && <span>Source: {topSource.file_name}{topSource.location ? `, ${topSource.location}` : ""}</span>}
+          {topReference && <span>Reference: {topReference.file_name}{topReference.location ? `, ${topReference.location}` : ""}</span>}
+          {!topSource && !topReference && <span>No planned candidates.</span>}
+        </div>
+      </summary>
+      <div className="evidence-plan-content">
+        {section.warnings.map((warning) => <p className="warning" key={warning}>{warning}</p>)}
+        <QuickEvidenceFeedback feedback={feedback} setFeedback={setFeedback} />
+        <label className="wide-label compact-label">
+          Section-specific note
+          <textarea
+            value={feedback}
+            onChange={(event) => setFeedback(event.target.value)}
+            placeholder="Optional: mention missing source, wrong mapping, source/reference conflict, or constraints for this section."
+          />
+        </label>
+        <div className="evidence-candidate-grid">
+          <EvidenceCandidateColumn title="Source candidates" items={section.source_chunks} />
+          <EvidenceCandidateColumn title="Reference candidates" items={section.reference_items} />
+        </div>
+      </div>
+    </details>
+  );
+}
+
+function QuickEvidenceFeedback({ feedback, setFeedback }: { feedback: string; setFeedback: (value: string) => void }) {
+  const appendFeedback = (value: string) => {
+    setFeedback(feedback.trim() ? `${feedback.trim()}\n${value}` : value);
+  };
+  return (
+    <div className="quick-feedback">
+      {[
+        "Missing source evidence.",
+        "Reference conflicts with source; keep source authoritative.",
+        "Reference is useful as supplemental field experience.",
+        "Candidate mapping looks unrelated."
+      ].map((item) => (
+        <button key={item} type="button" onClick={() => appendFeedback(item)}>
+          {item}
+        </button>
       ))}
     </div>
   );
@@ -878,46 +1218,91 @@ function EvidenceCandidateColumn({ title, items }: { title: string; items: Evide
 }
 
 function EvidenceCandidateCard({ item, rank }: { item: EvidenceRef; rank: number }) {
+  const excerpt = item.excerpt || item.summary || "No preview text available.";
+  const summaryIsDistinct = item.summary && !isSimilarText(item.summary, excerpt);
   return (
     <article className="evidence-candidate-card">
       <div className="candidate-meta">
         <span>#{rank}</span>
-        <strong>{item.file_name}</strong>
-        <small>{item.location || "location unknown"} · score {item.score.toFixed(2)}</small>
+        <div>
+          <strong>{item.file_name}</strong>
+          <small>{item.location || "location unknown"} · score {item.score.toFixed(2)}</small>
+        </div>
       </div>
-      <p className="candidate-reason">{item.reason}</p>
-      <p className="candidate-summary">{item.summary}</p>
-      <p className="candidate-excerpt">{item.excerpt}</p>
+      <pre className="candidate-excerpt">{excerpt}</pre>
+      <details className="candidate-technical">
+        <summary>Why selected</summary>
+        <p>{item.reason}</p>
+        {summaryIsDistinct && <p>Summary: {item.summary}</p>}
+      </details>
     </article>
   );
 }
 
+function evidenceSectionMatches(
+  section: EvidenceSection,
+  filter: EvidenceFilter,
+  query: string,
+  sectionFeedback: Record<string, string>
+) {
+  if (filter === "warnings" && section.warnings.length === 0) return false;
+  if (filter === "no_source" && section.source_chunks.length > 0) return false;
+  if (filter === "reference_heavy" && section.reference_items.length <= section.source_chunks.length) return false;
+  if (filter === "needs_feedback" && !sectionFeedback[section.section_id]?.trim()) return false;
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return true;
+  const searchable = [
+    section.section_title,
+    ...section.warnings,
+    ...section.source_chunks.flatMap(evidenceSearchFields),
+    ...section.reference_items.flatMap(evidenceSearchFields),
+    sectionFeedback[section.section_id] || ""
+  ].join("\n").toLowerCase();
+  return searchable.includes(normalized);
+}
+
+function evidenceSearchFields(item: EvidenceRef) {
+  return [item.file_name, item.location || "", item.summary, item.excerpt, item.reason];
+}
+
+function isSimilarText(left: string, right: string) {
+  const normalizedLeft = normalizePreviewText(left);
+  const normalizedRight = normalizePreviewText(right);
+  if (!normalizedLeft || !normalizedRight) return false;
+  return normalizedRight.includes(normalizedLeft.slice(0, 80)) || normalizedLeft.includes(normalizedRight.slice(0, 80));
+}
+
+function normalizePreviewText(value: string) {
+  return value.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
 function DownloadPanel({
   jobId,
-  isCompleted,
   downloadLinksRef
 }: {
   jobId: string;
-  isCompleted: boolean;
   downloadLinksRef: RefObject<HTMLDivElement>;
 }) {
   return (
     <div className="output-panel" ref={downloadLinksRef}>
-      <div>
-        <h3>{isCompleted ? "Final output" : "Draft output"}</h3>
-        <p className="muted">
-          {isCompleted
-            ? "The draft is approved. Download the final SOP document or supporting reports."
-            : "The DOCX is available for review. Approve the draft before sharing it as final."}
-        </p>
+      <div className="output-summary">
+        <div className="output-status">
+          <span>Approved</span>
+        </div>
+        <div className="output-copy">
+          <h3>Final SOP is ready</h3>
+          <p className="muted">
+            Download the approved SOP document. Supporting reports are available below for audit and review.
+          </p>
+        </div>
+        <a className="primary-download" href={`/api/jobs/${jobId}/download/final_sop.docx`}>
+          <span className="download-filetype">DOCX</span>
+          <span className="download-copy">
+            <strong>Download DOCX</strong>
+            <span>Approved SOP document</span>
+          </span>
+        </a>
       </div>
-      <a className="primary-download" href={`/api/jobs/${jobId}/download/final_sop.docx`}>
-        <span className="download-filetype">DOCX</span>
-        <span className="download-copy">
-          <strong>{isCompleted ? "Download final SOP DOCX" : "Download draft DOCX"}</strong>
-          <span>{isCompleted ? "Approved document" : "Review copy"}</span>
-        </span>
-      </a>
       <details className="report-downloads">
         <summary>Reviewer reports and technical details</summary>
         <div className="report-links">
@@ -939,27 +1324,45 @@ function DownloadPanel({
   );
 }
 
-function gateState(gate: GateName, status: JobStatus | null, evidencePlan: EvidencePlan | null, draft: GenerationResult | null): StepState {
+function gateState(
+  gate: GateName,
+  status: JobStatus | null,
+  templateResolutionOrEvidencePlan: TemplateSectionResolution | EvidencePlan | null,
+  evidencePlanOrDraft?: EvidencePlan | GenerationResult | null,
+  draftArg?: GenerationResult | null
+): StepState {
   if (status?.pending_gates?.includes(gate)) return "pending";
+  const evidencePlan = draftArg === undefined
+    ? templateResolutionOrEvidencePlan as EvidencePlan | null
+    : evidencePlanOrDraft as EvidencePlan | null;
+  const draft = draftArg === undefined ? evidencePlanOrDraft as GenerationResult | null : draftArg;
   if (gate === "draft_review") {
     if (!draft) return "locked";
     return status?.review_settings?.draft_review_enabled === false ? "auto" : "done";
   }
+  if (gate === "template_review") {
+    if (!templateResolutionOrEvidencePlan) return "locked";
+    return status?.review_settings?.template_review_enabled === false ? "auto" : "done";
+  }
   if (!evidencePlan) return "locked";
-  const enabled = gate === "template_review"
-    ? status?.review_settings?.template_review_enabled
-    : status?.review_settings?.evidence_review_enabled;
+  const enabled = status?.review_settings?.evidence_review_enabled;
   return enabled === false ? "auto" : "done";
 }
 
-function getCurrentTask(status: JobStatus | null, evidencePlan: EvidencePlan | null, draft: GenerationResult | null) {
+function getCurrentTask(
+  status: JobStatus | null,
+  templateResolution: TemplateSectionResolution | null,
+  evidencePlan: EvidencePlan | null,
+  draft: GenerationResult | null
+) {
   if (!status) return { title: "Create a job first", detail: "Upload at least one source PDF and one DOCX template, then create a job." };
   if (status.status === "analyzing") return { title: "Analysis is running", detail: status.message || "The system is parsing files and planning evidence." };
   if (status.status === "generating") return { title: "Draft generation is running", detail: status.message || "The system is generating SOP sections." };
-  if (!evidencePlan) return { title: "Next: run analysis", detail: "This creates the template section list and evidence plan for review." };
+  if (!templateResolution) return { title: "Next: run analysis", detail: "This creates the template section proposal for review." };
   if (status.pending_gates?.includes("template_review")) return { title: "Next: approve template sections", detail: "Confirm the detected DOCX sections before generation uses them." };
+  if (!evidencePlan) return { title: "Next: plan evidence", detail: "Approving template sections starts evidence planning." };
   if (status.pending_gates?.includes("evidence_review")) return { title: "Next: approve evidence plan", detail: "Check source/reference evidence and add feedback if needed." };
-  if (!draft) return { title: "Next: generate draft", detail: "Template and evidence gates are cleared." };
+  if (!draft) return { title: "Draft generation is ready", detail: "Evidence is approved. Normal runs start generation automatically; use the fallback button if this is a resumed job." };
   if (status.pending_gates?.includes("draft_review")) return { title: "Next: review draft", detail: "Inspect paragraph provenance, regenerate sections if needed, then approve the draft." };
   return { title: "Job is complete", detail: "Final DOCX and reports are available for download." };
 }
@@ -1052,36 +1455,31 @@ function LogPanel({ logs }: { logs: LogEntry[] }) {
   );
 }
 
-function EvidenceSectionView({ section, feedback, setFeedback }: { section: EvidenceSection; feedback: string; setFeedback: (value: string) => void }) {
+function DraftBlockView({
+  block,
+  index,
+  evidenceById
+}: {
+  block: DraftBlock;
+  index: number;
+  evidenceById: Record<string, EvidenceRef>;
+}) {
+  const evidenceIds = [...block.source_chunk_ids, ...block.reference_item_ids];
   return (
-    <article className="evidence-section">
-      <h3>{section.section_title}</h3>
-      {section.warnings.map((warning) => <p className="warning" key={warning}>{warning}</p>)}
-      <div className="evidence-grid">
-        <EvidenceColumn title="Source chunks" items={section.source_chunks} />
-        <EvidenceColumn title="Reference items" items={section.reference_items} />
+    <article className="draft-block">
+      <div className="draft-block-header">
+        <strong>Paragraph {index + 1}</strong>
+        <span>
+          {block.source_chunk_ids.length} source · {block.reference_item_ids.length} reference
+        </span>
       </div>
-      <label className="wide-label">
-        Section feedback
-        <textarea value={feedback} onChange={(event) => setFeedback(event.target.value)} placeholder="Optional guidance for this section." />
-      </label>
+      <div className="draft-paragraph">{block.text}</div>
+      {block.warnings.map((warning) => <p className="warning" key={warning}>{warning}</p>)}
+      <details className="draft-evidence">
+        <summary>Paragraph evidence</summary>
+        <EvidenceLinks ids={evidenceIds} evidenceById={evidenceById} />
+      </details>
     </article>
-  );
-}
-
-function EvidenceColumn({ title, items }: { title: string; items: EvidenceRef[] }) {
-  return (
-    <div>
-      <h4>{title}</h4>
-      {items.length === 0 && <p className="muted">No planned evidence.</p>}
-      {items.map((item) => (
-        <details key={item.evidence_id} className="evidence-item">
-          <summary>{item.file_name} {item.location ? `· ${item.location}` : ""} · {item.score.toFixed(2)}</summary>
-          <p>{item.summary}</p>
-          <pre>{item.excerpt}</pre>
-        </details>
-      ))}
-    </div>
   );
 }
 
@@ -1122,11 +1520,28 @@ function formatRetention(days: number) {
 }
 
 async function postJson(path: string, body: unknown) {
-  const response = await fetch(`${API}${path}`, {
+  const response = await apiFetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body)
   });
-  if (!response.ok) throw new Error(await response.text());
+  if (!response.ok) throw new ApiError(response.status, await response.text());
   return response.json();
+}
+
+function apiFetch(path: string, init: RequestInit = {}) {
+  return fetch(`${API}${path}`, {
+    ...init,
+    credentials: init.credentials || "same-origin"
+  });
+}
+
+class ApiError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message || `Request failed with status ${status}`);
+    this.name = "ApiError";
+    this.status = status;
+  }
 }

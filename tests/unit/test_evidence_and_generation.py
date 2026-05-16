@@ -224,4 +224,84 @@ def test_generation_language_changes_body_copy_without_section_title():
     draft = generator.generate(section, GenerationProfile(language="en"))
 
     assert draft.title == "維修程序"
-    assert draft.blocks[0].text.startswith("Main source-based SOP draft content")
+    assert draft.blocks[0].text == "Release pressure before repair."
+    assert "維修程序" not in draft.blocks[0].text
+
+
+def test_generation_removes_page_markers_and_review_language_from_body_copy():
+    generator = SectionGenerator()
+    section = type(
+        "Section",
+        (),
+        {
+            "section_id": "s1",
+            "section_title": "1. Document Control",
+            "warnings": [],
+            "source_chunks": [
+                type("Evidence", (), {"evidence_id": "source-1-c1", "summary": "<!-- Page 1 --> Lockout before maintenance."})()
+            ],
+            "reference_items": [],
+        },
+    )()
+
+    draft = generator.generate(
+        section,
+        GenerationProfile(language="zh-TW"),
+        global_feedback="Use formal SOP language.",
+    )
+
+    assert draft.blocks[0].text == "Lockout before maintenance."
+    assert "<!--" not in draft.blocks[0].text
+    assert "本章節依據" not in draft.blocks[0].text
+    assert "審核" not in draft.blocks[0].text
+    assert draft.warnings == ["Reviewer feedback was used as generation guidance."]
+
+
+def test_generation_does_not_write_missing_source_placeholder_into_body():
+    generator = SectionGenerator()
+    section = type(
+        "Section",
+        (),
+        {
+            "section_id": "s1",
+            "section_title": "Acceptance Criteria",
+            "warnings": [],
+            "source_chunks": [],
+            "reference_items": [],
+        },
+    )()
+
+    draft = generator.generate(section, GenerationProfile(language="zh-TW"))
+
+    assert draft.blocks == []
+    assert draft.warnings == ["No source evidence was mapped; section body was not filled from vendor/source material."]
+
+
+def test_generation_prefers_full_excerpt_over_truncated_summary():
+    generator = SectionGenerator()
+    section = type(
+        "Section",
+        (),
+        {
+            "section_id": "s1",
+            "section_title": "Repair Procedure",
+            "warnings": [],
+            "source_chunks": [
+                type(
+                    "Evidence",
+                    (),
+                    {
+                        "evidence_id": "source-1-c1",
+                        "summary": "Check fixture interference...",
+                        "excerpt": "Check fixture interference, screw seating, fastening angle, driver speed profile, and retry logs.",
+                    },
+                )()
+            ],
+            "reference_items": [],
+        },
+    )()
+
+    draft = generator.generate(section, GenerationProfile(language="en"))
+
+    assert draft.blocks[0].text == "Check fixture interference, screw seating, fastening angle, driver speed profile, and retry logs."
+    assert "..." not in draft.blocks[0].text
