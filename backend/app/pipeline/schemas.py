@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from datetime import datetime
 from enum import Enum
 from typing import Dict, List, Optional
@@ -234,10 +236,24 @@ class EvidencePlan(BaseModel):
     retrieval_metadata: RetrievalMetadata = Field(default_factory=RetrievalMetadata)
 
 
+class StructuredListItem(BaseModel):
+    content_md: str = ""
+    text: str = ""
+    source_chunk_ids: List[str] = Field(default_factory=list)
+    reference_item_ids: List[str] = Field(default_factory=list)
+    items: List[StructuredListItem] = Field(default_factory=list)
+
+
 class StructuredBlock(BaseModel):
     block_id: str
     block_type: str = "paragraph"
-    text: str
+    text: str = ""
+    content_md: str = ""
+    level: int = 0
+    items: List[StructuredListItem] = Field(default_factory=list)
+    headers: List[str] = Field(default_factory=list)
+    rows: List[List[str]] = Field(default_factory=list)
+    callout_type: str = "note"
     source_chunk_ids: List[str] = Field(default_factory=list)
     reference_item_ids: List[str] = Field(default_factory=list)
     claims: List[str] = Field(default_factory=list)

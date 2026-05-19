@@ -1,3 +1,7 @@
+import json as json_module
+
+import requests
+
 from backend.app.core.config import ProviderConfig
 from backend.app.generation.section_generator import SectionGenerator
 from backend.app.indexing.embedding import EmbeddingClient
@@ -5,8 +9,41 @@ from backend.app.indexing.sparse import BM25Index, reciprocal_rank_fusion
 from backend.app.indexing.tokenizer import SparseTokenizer, TokenizerConfig
 from backend.app.ingestion.chunking import chunk_text_with_metadata
 from backend.app.ingestion.document_loaders import load_source_pdf
-from backend.app.pipeline.schemas import DomainTermSuggestion, GenerationProfile, ReferenceDocument, ReferenceItem, SourceChunk, SourceDocument, TemplateRefinementSuggestion, TemplateSection, TemplateStructure
+from backend.app.pipeline.schemas import DomainTermSuggestion, EvidenceRef, GenerationProfile, ReferenceDocument, ReferenceItem, SectionEvidence, SourceChunk, SourceDocument, TemplateRefinementSuggestion, TemplateSection, TemplateStructure
 from backend.app.planning.evidence_planner import EvidencePlanner
+
+
+class FakeLLMResponse:
+    def __init__(self, content: str):
+        self.content = content
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return {"choices": [{"message": {"content": self.content}}]}
+
+
+def evidence(
+    evidence_id: str,
+    evidence_type: str,
+    text: str,
+    *,
+    file_name: str = "manual.pdf",
+    location: str = "page 1",
+    summary: str = "",
+) -> EvidenceRef:
+    return EvidenceRef(
+        evidence_id=evidence_id,
+        document_id=evidence_id.split("-")[0],
+        file_name=file_name,
+        evidence_type=evidence_type,
+        location=location,
+        summary=summary or text[:120],
+        excerpt=text,
+        score=1.0,
+        reason="test evidence",
+    )
 
 
 def test_evidence_plan_keeps_source_and_reference_separate():
@@ -180,69 +217,132 @@ def test_template_refinement_suggestions_are_serialized():
     assert template.model_dump(mode="json")["refinement_suggestions"][0]["operation"] == "rename"
 
 
-def test_generated_blocks_carry_paragraph_level_provenance():
-    generator = SectionGenerator()
-    section = type(
-        "Section",
-        (),
-        {
-            "section_id": "s1",
-            "section_title": "Pump maintenance",
-            "warnings": [],
-            "source_chunks": [
-                type("Evidence", (), {"evidence_id": "source-1-c1", "summary": "Lockout before maintenance."})()
-            ],
-            "reference_items": [
-                type("Evidence", (), {"evidence_id": "ref-1-i1", "summary": "Seal wear was observed in prior repairs."})()
-            ],
-        },
-    )()
+def test_llm_generated_blocks_carry_paragraph_level_provenance(monkeypatch):
+    calls = []
+
+    def fake_post(url, headers, json, timeout):
+        calls.append({"url": url, "headers": headers, "payload": json, "timeout": timeout})
+        return FakeLLMResponse(
+            json_module.dumps(
+                {
+                    "blocks": [
+                        {
+                            "block_type": "paragraph",
+                            "text": "Lockout before maintenance and release pressure before repair.",
+                            "source_chunk_ids": ["source-1-c1"],
+                            "reference_item_ids": [],
+                            "claims": ["Lockout and pressure release are required."],
+                        },
+                        {
+                            "block_type": "bullet",
+                            "text": "Inspect seal wear patterns from prior repair records.",
+                            "source_chunk_ids": [],
+                            "reference_item_ids": ["ref-1-i1"],
+                        },
+                    ]
+                }
+            )
+        )
+
+    monkeypatch.setattr("backend.app.generation.section_generator.requests.post", fake_post)
+    generator = SectionGenerator(ProviderConfig("http://llm.example/v1", "secret", "sop-writer", timeout_seconds=9))
+    section = SectionEvidence(
+        section_id="s1",
+        section_title="Pump maintenance",
+        source_chunks=[evidence("source-1-c1", "source", "Lockout before maintenance. Release pressure before repair.")],
+        reference_items=[
+            evidence(
+                "ref-1-i1",
+                "reference",
+                "Seal wear was observed in prior repairs.",
+                file_name="records.xlsx",
+                location="row 7",
+            )
+        ],
+    )
 
     draft = generator.generate(section, GenerationProfile())
 
+    assert calls[0]["url"] == "http://llm.example/v1/chat/completions"
+    assert calls[0]["headers"]["Authorization"] == "Bearer secret"
+    assert calls[0]["payload"]["model"] == "sop-writer"
     assert draft.blocks[0].source_chunk_ids == ["source-1-c1"]
     assert draft.blocks[1].reference_item_ids == ["ref-1-i1"]
-    assert draft.blocks[0].claims
+    assert draft.blocks[0].claims == ["Lockout and pressure release are required."]
 
 
-def test_generation_language_changes_body_copy_without_section_title():
-    generator = SectionGenerator()
-    section = type(
-        "Section",
-        (),
-        {
-            "section_id": "s1",
-            "section_title": "維修程序",
-            "warnings": [],
-            "source_chunks": [
-                type("Evidence", (), {"evidence_id": "source-1-c1", "summary": "Release pressure before repair."})()
-            ],
-            "reference_items": [],
-        },
-    )()
+def test_generation_language_guidance_does_not_include_section_title_in_body(monkeypatch):
+    captured_prompts = []
+
+    def fake_post(url, headers, json, timeout):
+        captured_prompts.append(json["messages"][1]["content"])
+        return FakeLLMResponse(
+            json_module.dumps(
+                {
+                    "blocks": [
+                        {
+                            "text": "Release pressure before repair.",
+                            "source_chunk_ids": ["source-1-c1"],
+                        }
+                    ]
+                }
+            )
+        )
+
+    monkeypatch.setattr("backend.app.generation.section_generator.requests.post", fake_post)
+    generator = SectionGenerator(ProviderConfig("http://llm.example/v1", None, "sop-writer"))
+    section = SectionEvidence(
+        section_id="s1",
+        section_title="維修程序",
+        source_chunks=[evidence("source-1-c1", "source", "Release pressure before repair.")],
+    )
 
     draft = generator.generate(section, GenerationProfile(language="en"))
 
+    assert "Write in English." in captured_prompts[0]
     assert draft.title == "維修程序"
     assert draft.blocks[0].text == "Release pressure before repair."
     assert "維修程序" not in draft.blocks[0].text
 
 
-def test_generation_removes_page_markers_and_review_language_from_body_copy():
-    generator = SectionGenerator()
-    section = type(
-        "Section",
-        (),
-        {
-            "section_id": "s1",
-            "section_title": "1. Document Control",
-            "warnings": [],
-            "source_chunks": [
-                type("Evidence", (), {"evidence_id": "source-1-c1", "summary": "<!-- Page 1 --> Lockout before maintenance."})()
-            ],
-            "reference_items": [],
-        },
-    )()
+def test_generation_retries_and_removes_page_markers_and_review_language(monkeypatch):
+    responses = [
+        FakeLLMResponse(
+            json_module.dumps(
+                {
+                    "blocks": [
+                        {
+                            "text": "本章節依據原廠/來源文件整理「1. Document Control」的主要 SOP 草稿內容：<!-- Page 1 --> Lockout before maintenance.",
+                            "source_chunk_ids": ["source-1-c1"],
+                        }
+                    ]
+                }
+            )
+        ),
+        FakeLLMResponse(
+            json_module.dumps(
+                {
+                    "blocks": [
+                        {
+                            "text": "執行維護前，應完成能源隔離並確認設備處於安全狀態。",
+                            "source_chunk_ids": ["source-1-c1"],
+                        }
+                    ]
+                }
+            )
+        ),
+    ]
+
+    def fake_post(url, headers, json, timeout):
+        return responses.pop(0)
+
+    monkeypatch.setattr("backend.app.generation.section_generator.requests.post", fake_post)
+    generator = SectionGenerator(ProviderConfig("http://llm.example/v1", None, "sop-writer"))
+    section = SectionEvidence(
+        section_id="s1",
+        section_title="1. Document Control",
+        source_chunks=[evidence("source-1-c1", "source", "<!-- Page 1 --> Lockout before maintenance.")],
+    )
 
     draft = generator.generate(
         section,
@@ -250,58 +350,144 @@ def test_generation_removes_page_markers_and_review_language_from_body_copy():
         global_feedback="Use formal SOP language.",
     )
 
-    assert draft.blocks[0].text == "Lockout before maintenance."
+    assert draft.blocks[0].text == "執行維護前，應完成能源隔離並確認設備處於安全狀態。"
     assert "<!--" not in draft.blocks[0].text
     assert "本章節依據" not in draft.blocks[0].text
     assert "審核" not in draft.blocks[0].text
-    assert draft.warnings == ["Reviewer feedback was used as generation guidance."]
+    assert "Reviewer feedback was used as generation guidance." in draft.warnings
+    assert any("prohibited wording" in warning for warning in draft.warnings)
 
 
 def test_generation_does_not_write_missing_source_placeholder_into_body():
     generator = SectionGenerator()
-    section = type(
-        "Section",
-        (),
-        {
-            "section_id": "s1",
-            "section_title": "Acceptance Criteria",
-            "warnings": [],
-            "source_chunks": [],
-            "reference_items": [],
-        },
-    )()
+    section = SectionEvidence(
+        section_id="s1",
+        section_title="Acceptance Criteria",
+    )
 
     draft = generator.generate(section, GenerationProfile(language="zh-TW"))
 
     assert draft.blocks == []
-    assert draft.warnings == ["No source evidence was mapped; section body was not filled from vendor/source material."]
+    assert draft.warnings == ["No evidence was mapped; section body was not generated."]
 
 
-def test_generation_prefers_full_excerpt_over_truncated_summary():
+def test_generation_without_llm_does_not_concatenate_evidence_into_body():
     generator = SectionGenerator()
-    section = type(
-        "Section",
-        (),
-        {
-            "section_id": "s1",
-            "section_title": "Repair Procedure",
-            "warnings": [],
-            "source_chunks": [
-                type(
-                    "Evidence",
-                    (),
-                    {
-                        "evidence_id": "source-1-c1",
-                        "summary": "Check fixture interference...",
-                        "excerpt": "Check fixture interference, screw seating, fastening angle, driver speed profile, and retry logs.",
-                    },
-                )()
-            ],
-            "reference_items": [],
-        },
-    )()
+    section = SectionEvidence(
+        section_id="s1",
+        section_title="Repair Procedure",
+        source_chunks=[
+            evidence(
+                "source-1-c1",
+                "source",
+                "Check fixture interference, screw seating, fastening angle, driver speed profile, and retry logs.",
+            )
+        ],
+    )
 
     draft = generator.generate(section, GenerationProfile(language="en"))
 
+    assert draft.blocks == []
+    assert draft.warnings == ["LLM generation is not configured; section body was not generated."]
+
+
+def test_generation_prefers_full_excerpt_over_truncated_summary(monkeypatch):
+    captured_prompts = []
+
+    def fake_post(url, headers, json, timeout):
+        captured_prompts.append(json["messages"][1]["content"])
+        return FakeLLMResponse(
+            json_module.dumps(
+                {
+                    "blocks": [
+                        {
+                            "text": "Check fixture interference, screw seating, fastening angle, driver speed profile, and retry logs.",
+                            "source_chunk_ids": ["source-1-c1"],
+                        }
+                    ]
+                }
+            )
+        )
+
+    monkeypatch.setattr("backend.app.generation.section_generator.requests.post", fake_post)
+    generator = SectionGenerator(ProviderConfig("http://llm.example/v1", None, "sop-writer"))
+    section = SectionEvidence(
+        section_id="s1",
+        section_title="Repair Procedure",
+        source_chunks=[
+            evidence(
+                "source-1-c1",
+                "source",
+                "Check fixture interference, screw seating, fastening angle, driver speed profile, and retry logs.",
+                summary="Check fixture interference...",
+            )
+        ],
+    )
+
+    draft = generator.generate(section, GenerationProfile(language="en"))
+
+    assert "Check fixture interference..." not in captured_prompts[0]
+    assert "driver speed profile, and retry logs." in captured_prompts[0]
     assert draft.blocks[0].text == "Check fixture interference, screw seating, fastening angle, driver speed profile, and retry logs."
-    assert "..." not in draft.blocks[0].text
+
+
+def test_generation_accepts_rich_list_and_table_blocks(monkeypatch):
+    def fake_post(url, headers, json, timeout):
+        return FakeLLMResponse(
+            json_module.dumps(
+                {
+                    "blocks": [
+                        {
+                            "block_type": "bullet_list",
+                            "items": [
+                                {
+                                    "content_md": "Inspect **valve** leakage.",
+                                    "source_chunk_ids": ["source-1-c1"],
+                                }
+                            ],
+                        },
+                        {
+                            "block_type": "table",
+                            "headers": ["Item", "Action"],
+                            "rows": [["Valve", "Replace if leakage is found"]],
+                            "source_chunk_ids": ["source-1-c1"],
+                        },
+                    ]
+                }
+            )
+        )
+
+    monkeypatch.setattr("backend.app.generation.section_generator.requests.post", fake_post)
+    generator = SectionGenerator(ProviderConfig("http://llm.example/v1", None, "sop-writer"))
+    section = SectionEvidence(
+        section_id="s1",
+        section_title="Repair Procedure",
+        source_chunks=[evidence("source-1-c1", "source", "Inspect valve leakage and replace if needed.")],
+    )
+
+    draft = generator.generate(section, GenerationProfile(language="en"))
+
+    assert draft.blocks[0].block_type == "bullet_list"
+    assert draft.blocks[0].items[0].content_md == "Inspect **valve** leakage."
+    assert draft.blocks[0].items[0].source_chunk_ids == ["source-1-c1"]
+    assert draft.blocks[1].block_type == "table"
+    assert draft.blocks[1].headers == ["Item", "Action"]
+    assert draft.blocks[1].rows == [["Valve", "Replace if leakage is found"]]
+
+
+def test_generation_reports_llm_timeout_detail(monkeypatch):
+    def fake_post(url, headers, json, timeout):
+        raise requests.exceptions.Timeout()
+
+    monkeypatch.setattr("backend.app.generation.section_generator.requests.post", fake_post)
+    generator = SectionGenerator(ProviderConfig("http://llm.example/v1", None, "slow-model", timeout_seconds=3))
+    section = SectionEvidence(
+        section_id="s1",
+        section_title="Repair Procedure",
+        source_chunks=[evidence("source-1-c1", "source", "Inspect valve leakage.")],
+    )
+
+    draft = generator.generate(section, GenerationProfile(language="en"))
+
+    assert draft.blocks == []
+    assert any("timed out after 3s" in warning for warning in draft.warnings)

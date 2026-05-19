@@ -1,6 +1,6 @@
 from typing import Dict, List
 
-from backend.app.pipeline.schemas import EvidencePlan, GenerationResult
+from backend.app.pipeline.schemas import EvidencePlan, GenerationResult, StructuredBlock, StructuredListItem
 
 
 def build_coverage_report(evidence_plan: EvidencePlan, generation: GenerationResult) -> Dict:
@@ -13,9 +13,7 @@ def build_coverage_report(evidence_plan: EvidencePlan, generation: GenerationRes
             mapped[chunk_id] = section.section_id
     used = {}
     for section in generation.sections:
-        used[section.section_id] = sorted(
-            {chunk_id for block in section.blocks for chunk_id in block.source_chunk_ids}
-        )
+        used[section.section_id] = sorted({chunk_id for block in section.blocks for chunk_id in _source_ids(block)})
     return {
         "job_id": evidence_plan.job_id,
         "mapped_source_chunks": mapped,
@@ -38,14 +36,17 @@ def build_provenance_report(evidence_plan: EvidencePlan, generation: GenerationR
                 "title": section.title,
                 "blocks": [
                     {
-                        "block_id": block.block_id,
-                        "text": block.text,
-                        "source_evidence": [evidence_lookup.get(item) for item in block.source_chunk_ids],
-                        "reference_evidence": [evidence_lookup.get(item) for item in block.reference_item_ids],
-                        "claims": block.claims,
-                        "warnings": block.warnings,
+                        "block_id": entry["block_id"],
+                        "text": entry["text"],
+                        "source_evidence_ids": entry["source_chunk_ids"],
+                        "reference_evidence_ids": entry["reference_item_ids"],
+                        "source_evidence": [evidence_lookup.get(item) for item in entry["source_chunk_ids"]],
+                        "reference_evidence": [evidence_lookup.get(item) for item in entry["reference_item_ids"]],
+                        "claims": entry["claims"],
+                        "warnings": entry["warnings"],
                     }
                     for block in section.blocks
+                    for entry in _provenance_entries(block)
                 ],
                 "warnings": section.warnings,
             }
@@ -60,3 +61,67 @@ def build_debug_report(job_id: str, status: Dict, logs: List[Dict], artifacts: D
         "logs": logs,
         "artifacts": artifacts,
     }
+
+
+def _source_ids(block: StructuredBlock) -> List[str]:
+    ids = list(block.source_chunk_ids)
+    for item in block.items:
+        ids.extend(_item_source_ids(item))
+    return ids
+
+
+def _item_source_ids(item: StructuredListItem) -> List[str]:
+    ids = list(item.source_chunk_ids)
+    for child in item.items:
+        ids.extend(_item_source_ids(child))
+    return ids
+
+
+def _provenance_entries(block: StructuredBlock) -> List[Dict]:
+    if block.block_type in {"bullet", "bullet_list", "numbered", "numbered_list"} and block.items:
+        return [
+            entry
+            for index, item in enumerate(block.items, start=1)
+            for entry in _list_item_entries(block.block_id, item, f"{index}")
+        ]
+    if block.block_type == "table":
+        entries = []
+        for index, row in enumerate(block.rows, start=1):
+            entries.append(
+                {
+                    "block_id": f"{block.block_id}-r{index}",
+                    "text": " | ".join(row),
+                    "source_chunk_ids": block.source_chunk_ids,
+                    "reference_item_ids": block.reference_item_ids,
+                    "claims": block.claims,
+                    "warnings": block.warnings,
+                }
+            )
+        return entries
+    return [
+        {
+            "block_id": block.block_id,
+            "text": block.content_md or block.text,
+            "source_chunk_ids": block.source_chunk_ids,
+            "reference_item_ids": block.reference_item_ids,
+            "claims": block.claims,
+            "warnings": block.warnings,
+        }
+    ]
+
+
+def _list_item_entries(prefix: str, item: StructuredListItem, path: str) -> List[Dict]:
+    entry = {
+        "block_id": f"{prefix}-i{path}",
+        "text": item.content_md or item.text,
+        "source_chunk_ids": item.source_chunk_ids,
+        "reference_item_ids": item.reference_item_ids,
+        "claims": [],
+        "warnings": [],
+    }
+    child_entries = [
+        child_entry
+        for index, child in enumerate(item.items, start=1)
+        for child_entry in _list_item_entries(prefix, child, f"{path}-{index}")
+    ]
+    return [entry] + child_entries

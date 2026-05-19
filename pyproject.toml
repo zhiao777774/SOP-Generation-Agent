@@ -19,6 +19,7 @@ dependencies = [
   "bm25s>=0.3.8",
   "jieba>=0.42.1",
   "OpenCC>=1.1.9",
+  "markdown-it-py>=3.0.0",
 ]
 
 [project.optional-dependencies]

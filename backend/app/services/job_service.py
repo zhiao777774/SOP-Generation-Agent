@@ -401,12 +401,14 @@ class JobService:
             job_id, JobStatusValue.GENERATING, "generate_sections", 0.75, "Generating structured section drafts."
         )
         feedback = self._collect_feedback(job_id)
+        llm_config = self._provider_config(job_id, "llm")
         sections = [
             self.generator.generate(
                 section,
                 profile,
                 global_feedback=" ".join([global_feedback, feedback["global"]]).strip(),
                 section_feedback=feedback["per_section"].get(section.section_id, ""),
+                llm_config=llm_config,
             )
             for section in evidence_plan.sections
         ]
@@ -433,12 +435,14 @@ class JobService:
         target = next((section for section in evidence_plan.sections if section.section_id == section_id), None)
         if not target:
             raise ValueError(f"Unknown section_id: {section_id}")
+        llm_config = self._provider_config(job_id, "llm")
         regenerated = self.generator.generate(
             target,
             profile,
             global_feedback=feedback_bundle["global"],
             section_feedback=feedback_bundle["per_section"].get(section_id, ""),
             regeneration_feedback=feedback,
+            llm_config=llm_config,
         )
         updated_sections: List[StructuredSectionDraft] = [
             regenerated if section.section_id == section_id else section for section in generation.sections

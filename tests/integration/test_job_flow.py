@@ -87,7 +87,8 @@ def test_full_job_auto_approves_disabled_gates_and_outputs_reports(tmp_path):
     assert status.current_step == "draft_ready"
     assert status.progress == 0.95
     assert status.pending_gates == []
-    assert generation.sections[0].blocks[0].source_chunk_ids
+    assert generation.sections[0].blocks == []
+    assert "LLM generation is not configured" in generation.sections[0].warnings[0]
     assert artifacts.artifact_path(job_id, "coverage_report").exists()
     assert artifacts.artifact_path(job_id, "provenance_report").exists()
     assert artifacts.artifact_path(job_id, "final_sop.docx").exists()
