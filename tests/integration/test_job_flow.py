@@ -83,9 +83,9 @@ def test_full_job_auto_approves_disabled_gates_and_outputs_reports(tmp_path):
     generation = service.generate(job_id, GenerationProfile())
     status = artifacts.read_json(job_id, "status", JobStatus)
 
-    assert status.status == JobStatusValue.NEEDS_REVIEW
-    assert status.current_step == "draft_ready"
-    assert status.progress == 0.95
+    assert status.status == JobStatusValue.COMPLETED
+    assert status.current_step == "completed"
+    assert status.progress == 1.0
     assert status.pending_gates == []
     assert generation.sections[0].blocks == []
     assert "LLM generation is not configured" in generation.sections[0].warnings[0]
@@ -135,6 +135,35 @@ def test_enabled_gates_block_generation_until_approved(tmp_path):
     assert status.current_step == "draft_ready"
     assert status.progress == 0.95
     assert status.pending_gates == [GateName.DRAFT]
+
+
+def test_generation_failure_marks_job_failed(tmp_path):
+    artifacts, service = make_service(tmp_path)
+    job_id = artifacts.create_job(
+        ReviewSettings(
+            template_review_enabled=False,
+            evidence_review_enabled=False,
+            draft_review_enabled=False,
+        )
+    )
+    seed_uploads(artifacts, job_id)
+    service.analyze(job_id)
+
+    class BrokenRenderer:
+        def render(self, *_args, **_kwargs):
+            raise KeyError("no style with name 'List Bullet'")
+
+    service.renderer = BrokenRenderer()
+
+    with pytest.raises(KeyError):
+        service.generate(job_id, GenerationProfile())
+
+    status = artifacts.read_json(job_id, "status", JobStatus)
+    assert status.status == JobStatusValue.FAILED
+    assert status.current_step == "failed"
+    assert "List Bullet" in status.error
+    assert not artifacts.artifact_path(job_id, "generated_sections").exists()
+    assert not artifacts.artifact_path(job_id, "coverage_report").exists()
 
 
 def test_template_feedback_refines_proposal_without_direct_replacement_when_llm_unavailable(tmp_path):

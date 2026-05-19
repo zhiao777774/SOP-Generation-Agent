@@ -104,6 +104,55 @@ def test_docx_renderer_writes_headings_lists_and_tables(tmp_path):
     assert "**" not in document.tables[0].cell(1, 1).text
 
 
+def test_docx_renderer_falls_back_when_list_style_is_missing(tmp_path, monkeypatch):
+    renderer = DocxRenderer()
+    original_apply_style = renderer._apply_style
+
+    def fake_apply_style(paragraph, style):
+        if style in {"List Bullet", "List Number"}:
+            return False
+        return original_apply_style(paragraph, style)
+
+    monkeypatch.setattr(renderer, "_apply_style", fake_apply_style)
+    output_path = tmp_path / "output.docx"
+    renderer.render(
+        None,
+        TemplateStructure(
+            template_id="template-1",
+            file_name="template.docx",
+            sections=[TemplateSection(section_id="s1", title="Repair Procedure", level=1)],
+        ),
+        GenerationResult(
+            job_id="job-1",
+            sections=[
+                StructuredSectionDraft(
+                    section_id="s1",
+                    title="Repair Procedure",
+                    blocks=[
+                        StructuredBlock(
+                            block_id="l1",
+                            block_type="bullet_list",
+                            items=[StructuredListItem(content_md="Check **valve**.")],
+                        ),
+                        StructuredBlock(
+                            block_id="n1",
+                            block_type="numbered_list",
+                            items=[StructuredListItem(content_md="Power off machine.")],
+                        ),
+                    ],
+                )
+            ],
+        ),
+        output_path,
+    )
+
+    document = Document(output_path)
+    texts = [paragraph.text for paragraph in document.paragraphs]
+    assert "- Check valve." in texts
+    assert "1. Power off machine." in texts
+    assert "**" not in "\n".join(texts)
+
+
 def test_provenance_report_flattens_rich_block_evidence():
     generation = GenerationResult(
         job_id="job-1",

@@ -77,9 +77,10 @@ class DocxRenderer:
 
         inserted = []
         for paragraph_spec in self._paragraph_specs(block):
-            paragraph = self._insert_paragraph_after(current, paragraph_spec["style"])
+            paragraph = self._insert_paragraph_after(current)
+            style_applied = self._apply_style(paragraph, paragraph_spec["style"])
             self._apply_indent(paragraph, paragraph_spec["indent"])
-            self._write_inline(paragraph, paragraph_spec["content"])
+            self._write_inline(paragraph, self._fallback_content(paragraph_spec, style_applied))
             inserted.append(paragraph)
             current = paragraph
         return inserted[-1] if inserted else current
@@ -91,8 +92,7 @@ class DocxRenderer:
         new_p = OxmlElement("w:p")
         self._element(current).addnext(new_p)
         new_paragraph = Paragraph(new_p, current._parent)
-        if style:
-            new_paragraph.style = style
+        self._apply_style(new_paragraph, style)
         return new_paragraph
 
     def _append_block(self, document, block: StructuredBlock):
@@ -101,9 +101,10 @@ class DocxRenderer:
 
         current = None
         for paragraph_spec in self._paragraph_specs(block):
-            paragraph = document.add_paragraph(style=paragraph_spec["style"])
+            paragraph = document.add_paragraph()
+            style_applied = self._apply_style(paragraph, paragraph_spec["style"])
             self._apply_indent(paragraph, paragraph_spec["indent"])
-            self._write_inline(paragraph, paragraph_spec["content"])
+            self._write_inline(paragraph, self._fallback_content(paragraph_spec, style_applied))
             current = paragraph
         return current
 
@@ -134,10 +135,17 @@ class DocxRenderer:
         depth: int = 0,
     ) -> List[dict]:
         if not items and fallback:
-            return [{"style": style, "content": fallback, "indent": depth}]
+            return [{"style": style, "content": fallback, "indent": depth, "fallback_prefix": self._list_prefix(style, 1)}]
         specs = []
-        for item in items:
-            specs.append({"style": style, "content": self._item_content(item), "indent": depth})
+        for index, item in enumerate(items, start=1):
+            specs.append(
+                {
+                    "style": style,
+                    "content": self._item_content(item),
+                    "indent": depth,
+                    "fallback_prefix": self._list_prefix(style, index),
+                }
+            )
             specs.extend(self._list_specs(item.items, style, depth=depth + 1))
         return specs
 
@@ -196,6 +204,12 @@ class DocxRenderer:
     def _apply_indent(self, paragraph, depth: int) -> None:
         if depth <= 0:
             return
+        try:
+            from docx.shared import Inches
+
+            paragraph.paragraph_format.left_indent = Inches(0.25 * depth)
+        except Exception:
+            return
 
     def _new_table(self, parent, rows: int, cols: int):
         try:
@@ -204,12 +218,27 @@ class DocxRenderer:
             from docx.shared import Inches
 
             return parent.add_table(rows=rows, cols=cols, width=Inches(6))
-        try:
-            from docx.shared import Inches
 
-            paragraph.paragraph_format.left_indent = Inches(0.25 * depth)
+    def _apply_style(self, paragraph, style: Optional[str]) -> bool:
+        if not style:
+            return True
+        try:
+            paragraph.style = style
+            return True
         except Exception:
-            return
+            return False
+
+    def _fallback_content(self, paragraph_spec: dict, style_applied: bool) -> str:
+        content = paragraph_spec["content"]
+        if style_applied:
+            return content
+        prefix = paragraph_spec.get("fallback_prefix", "")
+        return f"{prefix}{content}" if prefix else content
+
+    def _list_prefix(self, style: str, index: int) -> str:
+        if style == "List Number":
+            return f"{index}. "
+        return "- "
 
     def _content(self, block: StructuredBlock) -> str:
         return (block.content_md or block.text or "").strip()

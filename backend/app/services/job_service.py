@@ -400,31 +400,65 @@ class JobService:
         self.artifacts.update_status(
             job_id, JobStatusValue.GENERATING, "generate_sections", 0.75, "Generating structured section drafts."
         )
-        feedback = self._collect_feedback(job_id)
-        llm_config = self._provider_config(job_id, "llm")
-        sections = [
-            self.generator.generate(
-                section,
-                profile,
-                global_feedback=" ".join([global_feedback, feedback["global"]]).strip(),
-                section_feedback=feedback["per_section"].get(section.section_id, ""),
-                llm_config=llm_config,
+        try:
+            feedback = self._collect_feedback(job_id)
+            llm_config = self._provider_config(job_id, "llm")
+            sections = [
+                self.generator.generate(
+                    section,
+                    profile,
+                    global_feedback=" ".join([global_feedback, feedback["global"]]).strip(),
+                    section_feedback=feedback["per_section"].get(section.section_id, ""),
+                    llm_config=llm_config,
+                )
+                for section in evidence_plan.sections
+            ]
+            generation = GenerationResult(job_id=job_id, sections=sections)
+            self._persist_generation(job_id, evidence_plan, generation)
+            self._auto_or_pending(job_id, status.review_settings, [GateName.DRAFT])
+            pending = self._pending_draft_gate(job_id, status.review_settings)
+            if pending:
+                self.artifacts.update_status(
+                    job_id,
+                    JobStatusValue.NEEDS_REVIEW,
+                    "draft_ready",
+                    0.95,
+                    "Draft generated. Review is pending.",
+                    pending_gates=pending,
+                )
+            else:
+                self.artifacts.update_status(
+                    job_id,
+                    JobStatusValue.COMPLETED,
+                    "completed",
+                    1.0,
+                    "Draft generated and final artifacts are ready.",
+                    pending_gates=[],
+                )
+            return generation
+        except Exception as exc:
+            self.artifacts.delete_artifacts(
+                job_id,
+                [
+                    "review_draft_review",
+                    "generated_sections",
+                    "coverage_report",
+                    "provenance_report",
+                    "debug_report",
+                    "final_sop.docx",
+                ],
             )
-            for section in evidence_plan.sections
-        ]
-        generation = GenerationResult(job_id=job_id, sections=sections)
-        self._persist_generation(job_id, evidence_plan, generation)
-        self._auto_or_pending(job_id, status.review_settings, [GateName.DRAFT])
-        pending = self._pending_draft_gate(job_id, status.review_settings)
-        self.artifacts.update_status(
-            job_id,
-            JobStatusValue.NEEDS_REVIEW,
-            "draft_ready",
-            0.95,
-            "Draft generated. Review is pending." if pending else "Draft generated. Draft review was auto-approved.",
-            pending_gates=pending,
-        )
-        return generation
+            self.artifacts.append_log(job_id, "generate_sections", "Draft generation failed.", str(exc))
+            self.artifacts.update_status(
+                job_id,
+                JobStatusValue.FAILED,
+                "failed",
+                0.75,
+                "Draft generation failed.",
+                error=str(exc),
+                pending_gates=[],
+            )
+            raise
 
     def regenerate_section(
         self, job_id: str, section_id: str, feedback: str, profile: GenerationProfile

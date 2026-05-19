@@ -179,6 +179,7 @@ export default function App() {
   const draftReviewRef = useRef<HTMLElement | null>(null);
   const downloadLinksRef = useRef<HTMLDivElement | null>(null);
   const lastStatusStepRef = useRef("");
+  const autoGenerationStartedRef = useRef("");
   const toastIdRef = useRef(1);
 
   const evidenceById = useMemo(() => {
@@ -241,9 +242,13 @@ export default function App() {
       handleJobAccessLost();
       return;
     }
-    if (statusResponse.ok) setStatus(await statusResponse.json());
+    let nextStatus: JobStatus | null = null;
+    if (statusResponse.ok) {
+      nextStatus = await statusResponse.json();
+      setStatus(nextStatus);
+    }
     if (logsResponse.ok) setLogs((await logsResponse.json()).logs);
-    await loadArtifacts(nextJobId);
+    await loadArtifacts(nextJobId, nextStatus);
   }
 
   async function loadJobs() {
@@ -255,13 +260,27 @@ export default function App() {
     }
   }
 
-  async function loadArtifacts(nextJobId = jobId) {
-    const templateResponse = await apiFetch(`/api/jobs/${nextJobId}/artifacts/template_section_resolution`);
-    setTemplateResolution(templateResponse.ok ? await templateResponse.json() : null);
-    const evidenceResponse = await apiFetch(`/api/jobs/${nextJobId}/artifacts/evidence_plan`);
-    setEvidencePlan(evidenceResponse.ok ? await evidenceResponse.json() : null);
-    const draftResponse = await apiFetch(`/api/jobs/${nextJobId}/artifacts/generated_sections`);
-    setDraft(draftResponse.ok ? await draftResponse.json() : null);
+  async function loadArtifacts(nextJobId = jobId, nextStatus: JobStatus | null = status) {
+    if (shouldLoadTemplateArtifact(nextStatus)) {
+      const templateResponse = await apiFetch(`/api/jobs/${nextJobId}/artifacts/template_section_resolution`);
+      setTemplateResolution(templateResponse.ok ? await templateResponse.json() : null);
+    } else {
+      setTemplateResolution(null);
+    }
+
+    if (shouldLoadEvidenceArtifact(nextStatus)) {
+      const evidenceResponse = await apiFetch(`/api/jobs/${nextJobId}/artifacts/evidence_plan`);
+      setEvidencePlan(evidenceResponse.ok ? await evidenceResponse.json() : null);
+    } else {
+      setEvidencePlan(null);
+    }
+
+    if (shouldLoadDraftArtifact(nextStatus)) {
+      const draftResponse = await apiFetch(`/api/jobs/${nextJobId}/artifacts/generated_sections`);
+      setDraft(draftResponse.ok ? await draftResponse.json() : null);
+    } else {
+      setDraft(null);
+    }
   }
 
   async function resumeJob(nextJobId: string) {
@@ -529,6 +548,13 @@ export default function App() {
   const draftGateState = gateState("draft_review", status, evidencePlan, draft);
   const draftPanelState = draft ? draftGateState : generationRunning ? "running" : canGenerate ? "ready" : "locked";
   const currentTask = getCurrentTask(status, templateResolution, evidencePlan, draft);
+
+  useEffect(() => {
+    if (!canGenerate || busy || draft || status?.status === "failed" || status?.status === "completed") return;
+    if (autoGenerationStartedRef.current === jobId) return;
+    autoGenerationStartedRef.current = jobId;
+    void generate();
+  }, [busy, canGenerate, draft, jobId, status?.status]);
 
   return (
     <main className="app-shell">
@@ -1353,6 +1379,8 @@ function gateState(
   const draft = draftArg === undefined ? evidencePlanOrDraft as GenerationResult | null : draftArg;
   if (gate === "draft_review") {
     if (!draft) return "locked";
+    if (status?.status === "generating") return "running";
+    if (status?.status === "failed") return "locked";
     return status?.review_settings?.draft_review_enabled === false ? "auto" : "done";
   }
   if (gate === "template_review") {
@@ -1362,6 +1390,23 @@ function gateState(
   if (!evidencePlan) return "locked";
   const enabled = status?.review_settings?.evidence_review_enabled;
   return enabled === false ? "auto" : "done";
+}
+
+function shouldLoadTemplateArtifact(status: JobStatus | null) {
+  if (!status) return false;
+  if (["generating", "completed"].includes(status.status)) return true;
+  return ["template_review_ready", "analysis_ready", "review_updated", "draft_ready", "completed"].includes(status.current_step);
+}
+
+function shouldLoadEvidenceArtifact(status: JobStatus | null) {
+  if (!status) return false;
+  if (["generating", "completed"].includes(status.status)) return true;
+  return ["analysis_ready", "review_updated", "draft_ready"].includes(status.current_step);
+}
+
+function shouldLoadDraftArtifact(status: JobStatus | null) {
+  if (!status) return false;
+  return status.status === "completed" || status.current_step === "draft_ready";
 }
 
 function getCurrentTask(
