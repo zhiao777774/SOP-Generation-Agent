@@ -40,7 +40,7 @@ class ModelCatalog:
         for provider_name, provider in providers.items():
             provider_models = provider.get("models", [])
             for model in provider_models:
-                config = self._provider_config(provider, model["id"])
+                config = self._provider_config(provider, model)
                 if first_config is None:
                     first_config = config
                 if model_id and model["id"] == model_id:
@@ -51,7 +51,7 @@ class ModelCatalog:
             return first_config
         raise ValueError(f"No models configured in {self.path}")
 
-    def _provider_config(self, provider: Dict, model_id: str) -> ProviderConfig:
+    def _provider_config(self, provider: Dict, model: Dict) -> ProviderConfig:
         api_key = provider.get("apiKey")
         api_key_env = provider.get("apiKeyEnv")
         if api_key_env:
@@ -59,7 +59,8 @@ class ModelCatalog:
         return ProviderConfig(
             api_base=provider.get("baseUrl"),
             api_key=api_key,
-            model=model_id,
+            model=model["id"],
+            timeout_seconds=_timeout_seconds(provider, model),
         )
 
     def _load_raw(self, path: Path) -> Dict:
@@ -67,6 +68,21 @@ class ModelCatalog:
             return json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return {"providers": {}}
+
+
+def _timeout_seconds(provider: Dict, model: Dict) -> float:
+    value = (
+        os.getenv("SOP_LLM_TIMEOUT_SECONDS")
+        or model.get("timeoutSeconds")
+        or model.get("timeout_seconds")
+        or provider.get("timeoutSeconds")
+        or provider.get("timeout_seconds")
+        or 120
+    )
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 120.0
 
 
 def catalog_model_to_dict(model: CatalogModel) -> Dict:

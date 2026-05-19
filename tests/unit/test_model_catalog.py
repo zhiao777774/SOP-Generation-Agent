@@ -41,6 +41,28 @@ def test_model_catalog_lists_agentplayground_style_models(tmp_path):
     assert catalog.resolve_llm("qwen3:8b").model == "qwen3:8b"
 
 
+def test_model_catalog_uses_llm_timeout_env_for_selected_models(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOP_LLM_TIMEOUT_SECONDS", "180")
+    models_path = tmp_path / "models.json"
+    models_path.write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "custom": {
+                        "baseUrl": "http://model.local/v1",
+                        "models": [{"id": "slow-model"}],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = ModelCatalog(models_path).resolve_llm("slow-model")
+
+    assert config.timeout_seconds == 180
+
+
 def test_default_model_catalog_path_is_independent_of_cwd(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("SOP_MODELS_PATH", raising=False)
