@@ -1,10 +1,23 @@
 from pathlib import Path
 from typing import List, Optional
 
-from backend.app.pipeline.schemas import GenerationResult, StructuredBlock, TemplateStructure
+from backend.app.pipeline.schemas import (
+    GenerationResult,
+    StructuredBlock,
+    StructuredListItem,
+    TemplateStructure,
+)
 
 
 class DocxRenderer:
+    def __init__(self):
+        try:
+            from markdown_it import MarkdownIt
+
+            self.markdown = MarkdownIt("commonmark", options_update={"html": False})
+        except Exception:
+            self.markdown = None
+
     def render(
         self,
         template_path: Optional[str],
@@ -53,34 +66,183 @@ class DocxRenderer:
     def _insert_blocks_after(self, anchor, blocks: List[StructuredBlock]) -> None:
         current = anchor
         for block in blocks:
-            new_paragraph = self._insert_paragraph_after(current, block.text)
-            current = new_paragraph
+            current = self._insert_block_after(current, block)
 
-    def _insert_paragraph_after(self, paragraph, text: str):
+    def _insert_block_after(self, current, block: StructuredBlock):
+        parent = current._parent
+        if block.block_type == "table":
+            table = self._add_table(parent, block)
+            self._element(current).addnext(table._tbl)
+            return table
+
+        inserted = []
+        for paragraph_spec in self._paragraph_specs(block):
+            paragraph = self._insert_paragraph_after(current, paragraph_spec["style"])
+            self._apply_indent(paragraph, paragraph_spec["indent"])
+            self._write_inline(paragraph, paragraph_spec["content"])
+            inserted.append(paragraph)
+            current = paragraph
+        return inserted[-1] if inserted else current
+
+    def _insert_paragraph_after(self, current, style: Optional[str] = None):
         from docx.oxml import OxmlElement
         from docx.text.paragraph import Paragraph
 
         new_p = OxmlElement("w:p")
-        paragraph._p.addnext(new_p)
-        new_paragraph = Paragraph(new_p, paragraph._parent)
-        new_paragraph.style = paragraph.style
-        new_paragraph.add_run(text)
+        self._element(current).addnext(new_p)
+        new_paragraph = Paragraph(new_p, current._parent)
+        if style:
+            new_paragraph.style = style
         return new_paragraph
 
-    def _append_block(self, document, block: StructuredBlock) -> None:
-        if block.block_type == "heading":
-            document.add_heading(block.text, level=2)
-        elif block.block_type == "bullet":
-            document.add_paragraph(block.text, style="List Bullet")
-        elif block.block_type == "numbered":
-            document.add_paragraph(block.text, style="List Number")
-        else:
-            document.add_paragraph(block.text)
+    def _append_block(self, document, block: StructuredBlock):
+        if block.block_type == "table":
+            return self._add_table(document, block)
+
+        current = None
+        for paragraph_spec in self._paragraph_specs(block):
+            paragraph = document.add_paragraph(style=paragraph_spec["style"])
+            self._apply_indent(paragraph, paragraph_spec["indent"])
+            self._write_inline(paragraph, paragraph_spec["content"])
+            current = paragraph
+        return current
+
+    def _paragraph_specs(self, block: StructuredBlock) -> List[dict]:
+        block_type = block.block_type
+        if block_type == "heading":
+            return [
+                {
+                    "style": f"Heading {self._heading_level(block.level)}",
+                    "content": self._content(block),
+                    "indent": 0,
+                }
+            ]
+        if block_type in {"bullet", "bullet_list"}:
+            return self._list_specs(block.items, "List Bullet", fallback=self._content(block))
+        if block_type in {"numbered", "numbered_list"}:
+            return self._list_specs(block.items, "List Number", fallback=self._content(block))
+        if block_type == "callout":
+            prefix = block.callout_type.upper() if block.callout_type else "NOTE"
+            return [{"style": None, "content": f"{prefix}: {self._content(block)}", "indent": 0}]
+        return [{"style": None, "content": self._content(block), "indent": 0}]
+
+    def _list_specs(
+        self,
+        items: List[StructuredListItem],
+        style: str,
+        fallback: str = "",
+        depth: int = 0,
+    ) -> List[dict]:
+        if not items and fallback:
+            return [{"style": style, "content": fallback, "indent": depth}]
+        specs = []
+        for item in items:
+            specs.append({"style": style, "content": self._item_content(item), "indent": depth})
+            specs.extend(self._list_specs(item.items, style, depth=depth + 1))
+        return specs
+
+    def _add_table(self, parent, block: StructuredBlock):
+        rows = block.rows or []
+        headers = block.headers or []
+        column_count = max([len(headers)] + [len(row) for row in rows] + [1])
+        table = self._new_table(parent, len(rows) + (1 if headers else 0), column_count)
+        try:
+            table.style = "Table Grid"
+        except Exception:
+            pass
+        row_offset = 0
+        if headers:
+            self._fill_table_row(table.rows[0], headers, bold=True)
+            row_offset = 1
+        for index, row in enumerate(rows):
+            self._fill_table_row(table.rows[index + row_offset], row, bold=False)
+        return table
+
+    def _fill_table_row(self, row, values: List[str], bold: bool) -> None:
+        for index, cell in enumerate(row.cells):
+            value = values[index] if index < len(values) else ""
+            paragraph = cell.paragraphs[0]
+            paragraph.clear()
+            self._write_inline(paragraph, value, force_bold=bold)
+
+    def _write_inline(self, paragraph, content: str, force_bold: bool = False) -> None:
+        if not self.markdown:
+            run = paragraph.add_run(content)
+            run.bold = force_bold or None
+            return
+
+        tokens = self.markdown.parseInline(content, {})
+        children = tokens[0].children if tokens and tokens[0].children else []
+        strong = 0
+        emphasis = 0
+        for token in children:
+            if token.type == "strong_open":
+                strong += 1
+            elif token.type == "strong_close":
+                strong = max(strong - 1, 0)
+            elif token.type == "em_open":
+                emphasis += 1
+            elif token.type == "em_close":
+                emphasis = max(emphasis - 1, 0)
+            elif token.type in {"text", "code_inline"}:
+                run = paragraph.add_run(token.content)
+                run.bold = force_bold or bool(strong)
+                run.italic = bool(emphasis)
+                if token.type == "code_inline":
+                    run.font.name = "Consolas"
+            elif token.type in {"softbreak", "hardbreak"}:
+                paragraph.add_run().add_break()
+
+    def _apply_indent(self, paragraph, depth: int) -> None:
+        if depth <= 0:
+            return
+
+    def _new_table(self, parent, rows: int, cols: int):
+        try:
+            return parent.add_table(rows=rows, cols=cols)
+        except TypeError:
+            from docx.shared import Inches
+
+            return parent.add_table(rows=rows, cols=cols, width=Inches(6))
+        try:
+            from docx.shared import Inches
+
+            paragraph.paragraph_format.left_indent = Inches(0.25 * depth)
+        except Exception:
+            return
+
+    def _content(self, block: StructuredBlock) -> str:
+        return (block.content_md or block.text or "").strip()
+
+    def _item_content(self, item: StructuredListItem) -> str:
+        return (item.content_md or item.text or "").strip()
+
+    def _heading_level(self, level: int) -> int:
+        if level <= 0:
+            return 2
+        return min(max(level, 1), 6)
+
+    def _element(self, item):
+        paragraph_element = getattr(item, "_p", None)
+        if paragraph_element is not None:
+            return paragraph_element
+        table_element = getattr(item, "_tbl", None)
+        if table_element is not None:
+            return table_element
+        return item._element
 
     def _plain_text(self, generation: GenerationResult) -> str:
         lines = []
         for section in generation.sections:
             lines.append(section.title)
-            lines.extend(block.text for block in section.blocks)
+            for block in section.blocks:
+                lines.extend(self._plain_block_lines(block))
             lines.append("")
         return "\n".join(lines)
+
+    def _plain_block_lines(self, block: StructuredBlock) -> List[str]:
+        if block.block_type in {"bullet", "bullet_list", "numbered", "numbered_list"}:
+            return [self._item_content(item) for item in block.items] or [self._content(block)]
+        if block.block_type == "table":
+            return ["\t".join(row) for row in ([block.headers] if block.headers else []) + block.rows]
+        return [self._content(block)]

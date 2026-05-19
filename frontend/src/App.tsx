@@ -108,11 +108,26 @@ type EvidencePlan = {
 
 type DraftBlock = {
   block_id: string;
+  block_type?: string;
   text: string;
+  content_md?: string;
+  level?: number;
+  items?: DraftListItem[];
+  headers?: string[];
+  rows?: string[][];
+  callout_type?: string;
   source_chunk_ids: string[];
   reference_item_ids: string[];
   claims: string[];
   warnings: string[];
+};
+
+type DraftListItem = {
+  content_md?: string;
+  text?: string;
+  source_chunk_ids?: string[];
+  reference_item_ids?: string[];
+  items?: DraftListItem[];
 };
 
 type DraftSection = {
@@ -767,13 +782,13 @@ export default function App() {
                 <div className="draft-section-header">
                   <h3>{section.title}</h3>
                   <span>
-                    {section.blocks.length} paragraph{section.blocks.length === 1 ? "" : "s"}
+                    {section.blocks.length} block{section.blocks.length === 1 ? "" : "s"}
                     {section.warnings.length ? ` · ${section.warnings.length} warning${section.warnings.length === 1 ? "" : "s"}` : ""}
                   </span>
                 </div>
                 {section.warnings.map((warning) => <p className="warning" key={warning}>{warning}</p>)}
                 {section.blocks.length === 0 && (
-                  <p className="empty">No generated paragraph for this section. Review the section warning or regenerate after adding guidance.</p>
+                  <p className="empty">No generated content for this section. Review the section warning or regenerate after adding guidance.</p>
                 )}
                 {section.blocks.map((block, index) => (
                   <DraftBlockView
@@ -1464,23 +1479,119 @@ function DraftBlockView({
   index: number;
   evidenceById: Record<string, EvidenceRef>;
 }) {
-  const evidenceIds = [...block.source_chunk_ids, ...block.reference_item_ids];
+  const sourceIds = collectDraftSourceIds(block);
+  const referenceIds = collectDraftReferenceIds(block);
+  const evidenceIds = [...sourceIds, ...referenceIds];
   return (
-    <article className="draft-block">
+    <article className={`draft-block ${block.block_type || "paragraph"}`}>
       <div className="draft-block-header">
-        <strong>Paragraph {index + 1}</strong>
+        <strong>{draftBlockLabel(block, index)}</strong>
         <span>
-          {block.source_chunk_ids.length} source · {block.reference_item_ids.length} reference
+          {sourceIds.length} source · {referenceIds.length} reference
         </span>
       </div>
-      <div className="draft-paragraph">{block.text}</div>
+      <DraftBlockContent block={block} />
       {block.warnings.map((warning) => <p className="warning" key={warning}>{warning}</p>)}
       <details className="draft-evidence">
-        <summary>Paragraph evidence</summary>
+        <summary>Block evidence</summary>
         <EvidenceLinks ids={evidenceIds} evidenceById={evidenceById} />
       </details>
     </article>
   );
+}
+
+function DraftBlockContent({ block }: { block: DraftBlock }) {
+  const content = block.content_md || block.text || "";
+  if (block.block_type === "heading") {
+    return <h4 className="draft-rich-heading">{renderInlineMarkdown(content)}</h4>;
+  }
+  if (block.block_type === "bullet_list" || block.block_type === "bullet") {
+    return <DraftList items={block.items || []} ordered={false} fallback={content} />;
+  }
+  if (block.block_type === "numbered_list" || block.block_type === "numbered") {
+    return <DraftList items={block.items || []} ordered fallback={content} />;
+  }
+  if (block.block_type === "table") {
+    return <DraftTable headers={block.headers || []} rows={block.rows || []} />;
+  }
+  if (block.block_type === "callout") {
+    return <div className="draft-callout"><strong>{block.callout_type || "note"}</strong>{renderInlineMarkdown(content)}</div>;
+  }
+  return <div className="draft-paragraph">{renderInlineMarkdown(content)}</div>;
+}
+
+function DraftList({ items, ordered, fallback }: { items: DraftListItem[]; ordered: boolean; fallback: string }) {
+  if (!items.length && fallback) return <div className="draft-paragraph">{renderInlineMarkdown(fallback)}</div>;
+  const Tag = ordered ? "ol" : "ul";
+  return (
+    <Tag className="draft-rich-list">
+      {items.map((item, index) => (
+        <li key={`${index}-${item.content_md || item.text}`}>
+          {renderInlineMarkdown(item.content_md || item.text || "")}
+          {item.items?.length ? <DraftList items={item.items} ordered={ordered} fallback="" /> : null}
+        </li>
+      ))}
+    </Tag>
+  );
+}
+
+function DraftTable({ headers, rows }: { headers: string[]; rows: string[][] }) {
+  return (
+    <div className="draft-table-wrap">
+      <table className="draft-table">
+        {headers.length > 0 && (
+          <thead>
+            <tr>{headers.map((header, index) => <th key={`${index}-${header}`}>{renderInlineMarkdown(header)}</th>)}</tr>
+          </thead>
+        )}
+        <tbody>
+          {rows.map((row, rowIndex) => (
+            <tr key={rowIndex}>
+              {row.map((cell, cellIndex) => <td key={`${rowIndex}-${cellIndex}`}>{renderInlineMarkdown(cell)}</td>)}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function renderInlineMarkdown(value: string): ReactNode[] {
+  const parts = value.split(/(\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*)/g).filter(Boolean);
+  return parts.map((part, index) => {
+    if (part.startsWith("**") && part.endsWith("**")) return <strong key={index}>{part.slice(2, -2)}</strong>;
+    if (part.startsWith("`") && part.endsWith("`")) return <code key={index}>{part.slice(1, -1)}</code>;
+    if (part.startsWith("*") && part.endsWith("*")) return <em key={index}>{part.slice(1, -1)}</em>;
+    return <span key={index}>{part}</span>;
+  });
+}
+
+function draftBlockLabel(block: DraftBlock, index: number) {
+  if (block.block_type === "heading") return `Heading ${index + 1}`;
+  if (block.block_type === "bullet_list" || block.block_type === "bullet") return `Bullet list ${index + 1}`;
+  if (block.block_type === "numbered_list" || block.block_type === "numbered") return `Numbered list ${index + 1}`;
+  if (block.block_type === "table") return `Table ${index + 1}`;
+  if (block.block_type === "callout") return `Callout ${index + 1}`;
+  return `Paragraph ${index + 1}`;
+}
+
+function collectDraftSourceIds(block: DraftBlock) {
+  return uniqueIds([...(block.source_chunk_ids || []), ...collectListIds(block.items || [], "source")]);
+}
+
+function collectDraftReferenceIds(block: DraftBlock) {
+  return uniqueIds([...(block.reference_item_ids || []), ...collectListIds(block.items || [], "reference")]);
+}
+
+function collectListIds(items: DraftListItem[], type: "source" | "reference"): string[] {
+  return items.flatMap((item) => [
+    ...((type === "source" ? item.source_chunk_ids : item.reference_item_ids) || []),
+    ...collectListIds(item.items || [], type)
+  ]);
+}
+
+function uniqueIds(ids: string[]) {
+  return Array.from(new Set(ids.filter(Boolean)));
 }
 
 function EvidenceLinks({ ids, evidenceById }: { ids: string[]; evidenceById: Record<string, EvidenceRef> }) {
