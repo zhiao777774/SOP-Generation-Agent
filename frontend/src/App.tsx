@@ -175,6 +175,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [activeAction, setActiveAction] = useState("");
   const [error, setError] = useState("");
+  const [draftError, setDraftError] = useState("");
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const draftReviewRef = useRef<HTMLElement | null>(null);
   const downloadLinksRef = useRef<HTMLDivElement | null>(null);
@@ -308,6 +309,7 @@ export default function App() {
     setSectionFeedback({});
     setRegenerationFeedback({});
     setError("");
+    setDraftError("");
     setActiveAction("");
     lastStatusStepRef.current = "";
     setUploadFormKey((value) => value + 1);
@@ -325,6 +327,7 @@ export default function App() {
     setReferenceFiles(null);
     setTemplateFile(null);
     setError("");
+    setDraftError("");
     setActiveAction("");
     lastStatusStepRef.current = "";
     setUploadFormKey((value) => value + 1);
@@ -373,6 +376,7 @@ export default function App() {
       setEvidenceFeedback("");
       setSectionFeedback({});
       setRegenerationFeedback({});
+      setDraftError("");
       setStatus(created.status);
       const form = new FormData();
       Array.from(sourceFiles || []).forEach((file) => form.append("source_files", file));
@@ -457,15 +461,21 @@ export default function App() {
   }
 
   async function generateDraft() {
+    setDraftError("");
     showToast("Draft generation started", "The system is generating SOP sections from the approved evidence.");
-    const result = await postJson(`/api/jobs/${jobId}/generate`, {
-      generation_profile: { language: generationLanguage, tone: "professional", verbosity: "balanced" },
-      global_feedback: [templateFeedback, evidenceFeedback].filter(Boolean).join(" ")
-    });
-    setDraft(result);
-    await refresh();
-    showToast("Draft generated", "Review the draft below, then approve it when ready.", "draft_review");
-    window.setTimeout(() => scrollToDraftReview(), 60);
+    try {
+      const result = await postJson(`/api/jobs/${jobId}/generate`, {
+        generation_profile: { language: generationLanguage, tone: "professional", verbosity: "balanced" },
+        global_feedback: [templateFeedback, evidenceFeedback].filter(Boolean).join(" ")
+      });
+      setDraft(result);
+      await refresh();
+      showToast("Draft generated", "Review the draft below, then approve it when ready.", "draft_review");
+      window.setTimeout(() => scrollToDraftReview(), 60);
+    } catch (err) {
+      setDraftError(String(err));
+      throw err;
+    }
   }
 
   async function generate() {
@@ -476,6 +486,7 @@ export default function App() {
 
   async function regenerate(sectionId: string) {
     await run("Regenerating section", async () => {
+      setDraftError("");
       showToast("Section regeneration started", `Regenerating ${sectionId} from your feedback.`);
       const result = await postJson(`/api/jobs/${jobId}/sections/${sectionId}/regenerate`, {
         feedback: regenerationFeedback[sectionId] || "",
@@ -498,6 +509,10 @@ export default function App() {
         handleJobAccessLost();
       } else {
         setError(String(err));
+        if (label.includes("Generating") || label.includes("Regenerating")) {
+          setDraftError(String(err));
+        }
+        if (jobId) await refresh(jobId);
       }
     } finally {
       setBusy(false);
@@ -548,6 +563,9 @@ export default function App() {
   const draftGateState = gateState("draft_review", status, evidencePlan, draft);
   const draftPanelState = draft ? draftGateState : generationRunning ? "running" : canGenerate ? "ready" : "locked";
   const currentTask = getCurrentTask(status, templateResolution, evidencePlan, draft);
+  const draftGenerationActive = generationRunning || activeAction === "Generating SOP draft";
+  const draftFailureStatus = status?.status === "failed" && (status.message || "").toLowerCase().includes("draft generation");
+  const draftPanelError = draftError || (draftFailureStatus ? status?.error || status?.message || "Draft generation failed." : "");
 
   useEffect(() => {
     if (!canGenerate || busy || draft || status?.status === "failed" || status?.status === "completed") return;
@@ -698,6 +716,7 @@ export default function App() {
               {templateResolution ? (
                 <>
                   <TemplateResolutionSummary resolution={templateResolution} />
+                  <TemplateWarningDetails warnings={templateResolution.warnings || []} />
                   {evidenceReviewUnlocked ? (
                     <ApprovedTemplateSectionsSummary
                       sections={templateResolution.sections}
@@ -789,13 +808,38 @@ export default function App() {
                 <h2>3. Draft Review</h2>
                 <p className="muted">Review generated paragraphs, inspect provenance, regenerate sections, then approve the final draft.</p>
               </div>
-              {draft && (
+              {(draftGenerationActive || draft) && (
                 <div className="panel-heading-actions">
-                  <GateBadge state={draftGateState} label="Draft review" />
-                  <button disabled={busy || !pendingGates.includes("draft_review")} onClick={() => approve("draft_review")}>Approve draft</button>
+                  {draftGenerationActive && (
+                    <span className="draft-running-pill">
+                      <span className="task-dot running" />
+                      Generating draft
+                    </span>
+                  )}
+                  {draft && (
+                    <>
+                      <GateBadge state={draftGateState} label="Draft review" />
+                      <button disabled={busy || !pendingGates.includes("draft_review")} onClick={() => approve("draft_review")}>Approve draft</button>
+                    </>
+                  )}
                 </div>
               )}
             </div>
+            {draftGenerationActive && (
+              <div className="draft-status-banner running">
+                <span className="task-dot running" />
+                <div>
+                  <strong>Generating structured section drafts</strong>
+                  <p>This may take a while depending on the selected model. You can keep this page open or resume from Job History.</p>
+                </div>
+              </div>
+            )}
+            {draftPanelError && (
+              <div className="draft-status-banner failed">
+                <strong>Draft generation failed</strong>
+                <p>{draftPanelError}</p>
+              </div>
+            )}
             {!draft && <p className="empty">Generate a draft to review paragraph-level provenance and regenerate sections.</p>}
             {draft && jobId && status?.status === "completed" && (
               <DownloadPanel
@@ -945,6 +989,33 @@ function TemplateResolutionSummary({ resolution }: { resolution: TemplateSection
   );
 }
 
+function TemplateWarningDetails({ warnings }: { warnings: string[] }) {
+  const technicalWarnings = warnings.filter(isTechnicalTemplateWarning);
+  const generalFallback = warnings.some(isGeneralSopFallbackWarning);
+  const reviewWarnings = warnings.filter((warning) => !isTechnicalTemplateWarning(warning) && !isGeneralSopFallbackWarning(warning));
+  if (!generalFallback && !technicalWarnings.length && !reviewWarnings.length) return null;
+  return (
+    <div className="template-warning-details">
+      <div className="template-warning-heading">
+        <strong>Template analysis notes</strong>
+        <span>{warnings.length} note{warnings.length === 1 ? "" : "s"}</span>
+      </div>
+      {generalFallback && (
+        <p className="template-fallback-note">
+          No clear section headings were detected, so the system created one General SOP section. You can approve it or enter the sections you expect in the feedback box.
+        </p>
+      )}
+      {reviewWarnings.map((warning) => <p className="warning" key={warning}>{warning}</p>)}
+      {technicalWarnings.length > 0 && (
+        <details className="technical-template-warnings">
+          <summary>Technical details</summary>
+          {technicalWarnings.map((warning) => <pre key={warning}>{warning}</pre>)}
+        </details>
+      )}
+    </div>
+  );
+}
+
 function ApprovedTemplateSectionsSummary({
   sections,
   blocks
@@ -997,17 +1068,48 @@ function TemplateSectionList({ sections, blocks }: { sections: TemplateSection[]
 }
 
 function TemplateSuggestionList({ suggestions }: { suggestions: NonNullable<EvidencePlan["template"]["refinement_suggestions"]> }) {
-  if (!suggestions.length) return null;
+  const visibleSuggestions = suggestions.filter((suggestion) => {
+    const text = `${suggestion.operation} ${suggestion.title} ${suggestion.target_section_id || ""} ${suggestion.reason}`;
+    return !isTechnicalTemplateWarning(text);
+  });
+  if (!visibleSuggestions.length) return null;
   return (
     <div className="template-suggestions">
       <strong>Section refinement suggestions</strong>
-      {suggestions.map((suggestion, index) => (
+      {visibleSuggestions.map((suggestion, index) => (
         <p key={`${suggestion.operation}-${suggestion.target_section_id || index}`}>
           {suggestion.operation}: {suggestion.title || suggestion.target_section_id || "section"} - {suggestion.reason}
         </p>
       ))}
     </div>
   );
+}
+
+function isTechnicalTemplateWarning(value: string) {
+  const text = value.toLowerCase();
+  return [
+    "traceback",
+    "docx heading extraction failed",
+    "package not found",
+    "could not read",
+    "could not parse",
+    "httperror",
+    "httpconnectionpool",
+    "max retries exceeded",
+    "failed to resolve",
+    "connection refused",
+    "timed out",
+    "timeout",
+    "apierror",
+    "exception",
+    "llm section refinement failed",
+    "using rule-based section proposal",
+    "llm section refinement unavailable"
+  ].some((pattern) => text.includes(pattern));
+}
+
+function isGeneralSopFallbackWarning(value: string) {
+  return value.toLowerCase().includes("no clear headings detected");
 }
 
 function EvidenceSummary({ sections, warnings }: { sections: EvidenceSection[]; warnings: string[] }) {

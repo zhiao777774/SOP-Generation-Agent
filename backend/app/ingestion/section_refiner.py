@@ -80,7 +80,7 @@ class SectionRefiner:
                 blocks,
                 candidates,
                 fallback_sections,
-                [f"LLM section refinement failed; using rule-based section proposal. Detail: {exc}"],
+                ["LLM section refinement failed; using rule-based section proposal."],
                 feedback=feedback,
             )
 
