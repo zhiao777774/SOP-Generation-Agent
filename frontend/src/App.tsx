@@ -144,6 +144,7 @@ type StepState = "locked" | "ready" | "running" | "pending" | "done" | "auto";
 type ToastAction = "draft_review" | "downloads";
 type ToastMessage = { id: number; title: string; message: string; action?: ToastAction };
 type EvidenceFilter = "all" | "warnings" | "no_source" | "reference_heavy" | "needs_feedback";
+type WorkflowNavStep = "upload" | "analyze" | "draft";
 
 const API = "";
 
@@ -177,6 +178,8 @@ export default function App() {
   const [error, setError] = useState("");
   const [draftError, setDraftError] = useState("");
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  const uploadRef = useRef<HTMLElement | null>(null);
+  const flowRef = useRef<HTMLElement | null>(null);
   const draftReviewRef = useRef<HTMLElement | null>(null);
   const downloadLinksRef = useRef<HTMLDivElement | null>(null);
   const lastStatusStepRef = useRef("");
@@ -537,6 +540,14 @@ export default function App() {
     draftReviewRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
+  function scrollToUpload() {
+    uploadRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function scrollToAnalyze() {
+    flowRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
   function scrollToDownloads() {
     downloadLinksRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
   }
@@ -566,6 +577,20 @@ export default function App() {
   const draftGenerationActive = generationRunning || activeAction === "Generating SOP draft";
   const draftFailureStatus = status?.status === "failed" && (status.message || "").toLowerCase().includes("draft generation");
   const draftPanelError = draftError || (draftFailureStatus ? status?.error || status?.message || "Draft generation failed." : "");
+  const statusRunning = busy || analysisRunning || generationRunning;
+  const activeWorkflowStep: WorkflowNavStep =
+    draft || draftGenerationActive || canGenerate || status?.current_step === "draft_ready" || status?.current_step === "completed"
+      ? "draft"
+      : jobId || templateResolution || evidencePlan || analysisRunning
+        ? "analyze"
+        : "upload";
+  const runningWorkflowStep: WorkflowNavStep | null = analysisRunning
+    ? "analyze"
+    : draftGenerationActive
+      ? "draft"
+      : busy && activeAction.toLowerCase().includes("upload")
+        ? "upload"
+        : null;
 
   useEffect(() => {
     if (!canGenerate || busy || draft || status?.status === "failed" || status?.status === "completed") return;
@@ -587,50 +612,35 @@ export default function App() {
       />
 
       <div className="app-main">
-        <header className="topbar">
-          <div>
-            <h1>SOP Generation Agent</h1>
-            <p>Reviewable SOP drafts with section evidence, staged approvals, and clean DOCX output.</p>
-          </div>
-          <div className="topbar-actions">
-            <div className="job-chip">{jobId ? `Job ${jobId.slice(0, 8)}` : "No active job"}</div>
-            {jobId && (
-              <button className="secondary-action" type="button" onClick={startNewJob}>
-                Start new job
-              </button>
-            )}
-          </div>
-        </header>
-
-        {error && <div className="error">{error}</div>}
-        {toasts.length > 0 && (
-          <div className="toast-stack" role="status" aria-live="polite">
-            {toasts.map((toast) => (
-              <div className="toast" key={toast.id}>
-                <button className="toast-close" onClick={() => dismissToast(toast.id)} aria-label="Dismiss notification">x</button>
-                <strong>{toast.title}</strong>
-                <p>{toast.message}</p>
-                {toast.action && (
-                  <button className="toast-action" onClick={() => handleToastAction(toast)}>
-                    {toast.action === "draft_review" ? "Go to Draft Review" : "View downloads"}
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-        {(busy || status?.status === "analyzing" || status?.status === "generating") && (
-          <div className="run-banner">
-            <span className="spinner" />
+        <div className="topbar-shell">
+          <header className="topbar">
             <div>
-              <strong>{activeAction || status?.message || "Job is running"}</strong>
-              <p>{getUserStatusLabel(status)} · keep this page open or resume the job later from Job history.</p>
+              <h1>SOP Generation Agent</h1>
+              <p>Reviewable SOP drafts with section evidence, staged approvals, and clean DOCX output.</p>
             </div>
-          </div>
-        )}
+            <div className="topbar-actions">
+              <div className="job-chip">{jobId ? `Job ${jobId.slice(0, 8)}` : "No active job"}</div>
+              {jobId && (
+                <button className="start-job-action" type="button" onClick={startNewJob}>
+                  Start new job
+                </button>
+              )}
+            </div>
+          </header>
+
+          <TopStatusBand
+            error={error}
+            isRunning={statusRunning}
+            activeAction={activeAction}
+            status={status}
+            toasts={toasts}
+            dismissToast={dismissToast}
+            handleToastAction={handleToastAction}
+          />
+        </div>
 
         <div className="workspace">
-          <section className="panel upload-panel">
+          <section className="panel upload-panel" ref={uploadRef}>
           <h2>1. Upload</h2>
           <form key={uploadFormKey} onSubmit={createAndUpload} className="stack">
             <label>
@@ -679,7 +689,7 @@ export default function App() {
           </form>
           </section>
 
-          <section className="panel flow-panel">
+          <section className="panel flow-panel" ref={flowRef}>
           <div className="panel-heading">
             <div>
               <h2>2. Analyze and Review</h2>
@@ -825,15 +835,6 @@ export default function App() {
                 </div>
               )}
             </div>
-            {draftGenerationActive && (
-              <div className="draft-status-banner running">
-                <span className="task-dot running" />
-                <div>
-                  <strong>Generating structured section drafts</strong>
-                  <p>This may take a while depending on the selected model. You can keep this page open or resume from Job History.</p>
-                </div>
-              </div>
-            )}
             {draftPanelError && (
               <div className="draft-status-banner failed">
                 <strong>Draft generation failed</strong>
@@ -878,7 +879,113 @@ export default function App() {
           </section>
         </div>
       </div>
+
+      <WorkflowQuickNav
+        activeStep={activeWorkflowStep}
+        runningStep={runningWorkflowStep}
+        onUpload={scrollToUpload}
+        onAnalyze={scrollToAnalyze}
+        onDraft={scrollToDraftReview}
+      />
     </main>
+  );
+}
+
+function TopStatusBand({
+  error,
+  isRunning,
+  activeAction,
+  status,
+  toasts,
+  dismissToast,
+  handleToastAction
+}: {
+  error: string;
+  isRunning: boolean;
+  activeAction: string;
+  status: JobStatus | null;
+  toasts: ToastMessage[];
+  dismissToast: (id: number) => void;
+  handleToastAction: (toast: ToastMessage) => void;
+}) {
+  if (!error && !isRunning && toasts.length === 0) return null;
+  return (
+    <div className="top-status-band">
+      {error && (
+        <div className="status-error" role="alert">
+          <strong>Action failed</strong>
+          <p>{error}</p>
+        </div>
+      )}
+      {isRunning && (
+        <div className="run-banner">
+          <span className="spinner" />
+          <div>
+            <strong>{activeAction || status?.message || "Job is running"}</strong>
+            <p>{getUserStatusLabel(status)} · keep this page open or resume the job later from Job history.</p>
+          </div>
+        </div>
+      )}
+      {toasts.length > 0 && (
+        <div className="toast-stack" role="status" aria-live="polite">
+          {toasts.map((toast) => (
+            <div className="toast" key={toast.id}>
+              <button className="toast-close" onClick={() => dismissToast(toast.id)} aria-label="Dismiss notification">x</button>
+              <strong>{toast.title}</strong>
+              <p>{toast.message}</p>
+              {toast.action && (
+                <button className="toast-action" onClick={() => handleToastAction(toast)}>
+                  {toast.action === "draft_review" ? "Go to Draft Review" : "View downloads"}
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WorkflowQuickNav({
+  activeStep,
+  runningStep,
+  onUpload,
+  onAnalyze,
+  onDraft
+}: {
+  activeStep: WorkflowNavStep;
+  runningStep: WorkflowNavStep | null;
+  onUpload: () => void;
+  onAnalyze: () => void;
+  onDraft: () => void;
+}) {
+  const items: { key: WorkflowNavStep; label: string; shortLabel: string; onClick: () => void }[] = [
+    { key: "upload", label: "Upload", shortLabel: "1", onClick: onUpload },
+    { key: "analyze", label: "Analyze", shortLabel: "2", onClick: onAnalyze },
+    { key: "draft", label: "Draft", shortLabel: "3", onClick: onDraft }
+  ];
+  return (
+    <nav className="workflow-quick-nav" aria-label="Workflow steps">
+      <span className="quick-nav-title">Steps</span>
+      {items.map((item) => {
+        const active = activeStep === item.key;
+        const running = runningStep === item.key;
+        return (
+          <button
+            className={`quick-nav-item ${active ? "active" : ""} ${running ? "running" : ""}`}
+            type="button"
+            key={item.key}
+            onClick={item.onClick}
+            aria-current={active ? "step" : undefined}
+          >
+            <span className="quick-nav-number">
+              {running ? <span className="task-dot running" /> : item.shortLabel}
+            </span>
+            <span>{item.label}</span>
+          </button>
+        );
+      })}
+    </nav>
   );
 }
 
@@ -1439,7 +1546,6 @@ function DownloadPanel({
           </p>
         </div>
         <a className="primary-download" href={`/api/jobs/${jobId}/download/final_sop.docx`}>
-          <span className="download-filetype">DOCX</span>
           <span className="download-copy">
             <strong>Download DOCX</strong>
             <span>Approved SOP document</span>
