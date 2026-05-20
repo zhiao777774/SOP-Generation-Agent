@@ -7,6 +7,7 @@ from backend.app.pipeline.schemas import (
     StructuredBlock,
     StructuredListItem,
     StructuredSectionDraft,
+    TemplateBlock,
     TemplateSection,
     TemplateStructure,
 )
@@ -151,6 +152,66 @@ def test_docx_renderer_falls_back_when_list_style_is_missing(tmp_path, monkeypat
     assert "- Check valve." in texts
     assert "1. Power off machine." in texts
     assert "**" not in "\n".join(texts)
+
+
+def test_docx_renderer_anchors_sections_after_table_blocks(tmp_path):
+    template_path = tmp_path / "template.docx"
+    template = Document()
+    metadata = template.add_table(rows=1, cols=1)
+    metadata.cell(0, 0).text = "Document metadata"
+    template.add_paragraph("1.目的Objective：")
+    template.add_paragraph("2.範圍Scope：")
+    template.save(template_path)
+
+    output_path = tmp_path / "output.docx"
+    DocxRenderer().render(
+        str(template_path),
+        TemplateStructure(
+            template_id="template-1",
+            file_name="template.docx",
+            blocks=[
+                TemplateBlock(block_id="block-1", text="Document metadata", source_type="table", order_index=0),
+                TemplateBlock(block_id="block-2", text="1.目的Objective：", source_type="paragraph", order_index=1),
+                TemplateBlock(block_id="block-3", text="2.範圍Scope：", source_type="paragraph", order_index=2),
+            ],
+            sections=[
+                TemplateSection(
+                    section_id="objective",
+                    title="目的Objective",
+                    start_block_index=1,
+                    source_block_ids=["block-2"],
+                ),
+                TemplateSection(
+                    section_id="scope",
+                    title="範圍Scope",
+                    start_block_index=2,
+                    source_block_ids=["block-3"],
+                ),
+            ],
+        ),
+        GenerationResult(
+            job_id="job-1",
+            sections=[
+                StructuredSectionDraft(
+                    section_id="objective",
+                    title="目的Objective",
+                    blocks=[StructuredBlock(block_id="objective-p1", content_md="Objective body")],
+                ),
+                StructuredSectionDraft(
+                    section_id="scope",
+                    title="範圍Scope",
+                    blocks=[StructuredBlock(block_id="scope-p1", content_md="Scope body")],
+                ),
+            ],
+        ),
+        output_path,
+    )
+
+    output = Document(output_path)
+    texts = [paragraph.text for paragraph in output.paragraphs if paragraph.text]
+
+    assert texts.index("1.目的Objective：") < texts.index("Objective body") < texts.index("2.範圍Scope：")
+    assert texts.index("2.範圍Scope：") < texts.index("Scope body")
 
 
 def test_provenance_report_flattens_rich_block_evidence():

@@ -5,6 +5,7 @@ from backend.app.pipeline.schemas import (
     GenerationResult,
     StructuredBlock,
     StructuredListItem,
+    TemplateBlock,
     TemplateStructure,
 )
 
@@ -42,13 +43,13 @@ class DocxRenderer:
 
         section_by_id = {section.section_id: section for section in generation.sections}
         inserted = set()
-        paragraphs = list(document.paragraphs)
+        anchors_by_block_id = self._anchors_by_template_block_id(document, template_structure.blocks)
         for template_section in template_structure.sections:
             draft = section_by_id.get(template_section.section_id)
             if not draft:
                 continue
-            if template_section.start_block_index < len(paragraphs):
-                anchor = paragraphs[template_section.start_block_index]
+            anchor = self._anchor_for_section(template_section.source_block_ids, anchors_by_block_id)
+            if anchor is not None:
                 self._insert_blocks_after(anchor, draft.blocks)
                 inserted.add(draft.section_id)
 
@@ -239,6 +240,84 @@ class DocxRenderer:
         if style == "List Number":
             return f"{index}. "
         return "- "
+
+    def _anchors_by_template_block_id(self, document, blocks: List[TemplateBlock]) -> dict:
+        anchors = {}
+        block_index = 0
+        for item in self._iter_docx_block_items(document):
+            if self._is_paragraph_like(item):
+                block_index = self._map_paragraph_anchor(item, blocks, block_index, anchors)
+                continue
+            block_index = self._skip_table_blocks(item, blocks, block_index)
+        return anchors
+
+    def _map_paragraph_anchor(self, paragraph, blocks: List[TemplateBlock], block_index: int, anchors: dict) -> int:
+        text = paragraph.text.strip()
+        if not text:
+            return block_index
+        block = self._matching_block(blocks, block_index, text, "paragraph")
+        if block:
+            anchors[block.block_id] = paragraph
+        return block_index + 1
+
+    def _skip_table_blocks(self, table, blocks: List[TemplateBlock], block_index: int) -> int:
+        seen_cells = set()
+        for row in table.rows:
+            for cell in row.cells:
+                cell_key = cell._tc
+                if cell_key in seen_cells:
+                    continue
+                seen_cells.add(cell_key)
+                for item in self._iter_docx_block_items(cell):
+                    if self._is_paragraph_like(item):
+                        text = item.text.strip()
+                        if text:
+                            self._matching_block(blocks, block_index, text, "table")
+                            block_index += 1
+                        continue
+                    block_index = self._skip_table_blocks(item, blocks, block_index)
+        return block_index
+
+    def _matching_block(
+        self,
+        blocks: List[TemplateBlock],
+        start_index: int,
+        text: str,
+        source_type: str,
+    ) -> Optional[TemplateBlock]:
+        for index in range(start_index, min(start_index + 8, len(blocks))):
+            block = blocks[index]
+            if block.source_type == source_type and block.text.strip() == text:
+                return block
+        return None
+
+    def _anchor_for_section(self, block_ids: List[str], anchors_by_block_id: dict):
+        for block_id in block_ids:
+            anchor = anchors_by_block_id.get(block_id)
+            if anchor is not None:
+                return anchor
+        return None
+
+    def _iter_docx_block_items(self, parent):
+        from docx.oxml.table import CT_Tbl
+        from docx.oxml.text.paragraph import CT_P
+        from docx.table import Table
+        from docx.text.paragraph import Paragraph
+
+        if hasattr(parent, "element") and hasattr(parent.element, "body"):
+            parent_element = parent.element.body
+        elif hasattr(parent, "_tc"):
+            parent_element = parent._tc
+        else:
+            parent_element = parent.element
+        for child in parent_element.iterchildren():
+            if isinstance(child, CT_P):
+                yield Paragraph(child, parent)
+            elif isinstance(child, CT_Tbl):
+                yield Table(child, parent)
+
+    def _is_paragraph_like(self, item) -> bool:
+        return hasattr(item, "text")
 
     def _content(self, block: StructuredBlock) -> str:
         return (block.content_md or block.text or "").strip()
