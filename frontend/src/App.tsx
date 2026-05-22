@@ -660,16 +660,45 @@ export default function App() {
           <section className="panel upload-panel" ref={uploadRef}>
           <h2>1. Upload</h2>
           <form key={uploadFormKey} onSubmit={createAndUpload} className="stack">
+            <div className="upload-role-guide" aria-label="Source and reference material roles">
+              <div>
+                <strong>Source documents</strong>
+                <span>Primary vendor, spec, or procedure evidence. When source and reference conflict, source remains authoritative.</span>
+              </div>
+              <div>
+                <strong>Reference materials</strong>
+                <span>Supplemental repair history, field cases, or notes used to fill gaps and traced separately in review.</span>
+              </div>
+            </div>
             <label>
-              Source PDFs
-              <input type="file" multiple accept=".pdf,.txt" onChange={(e) => setSourceFiles(e.target.files)} />
+              <span className="file-label-title">Source documents</span>
+              <span className="file-label-note">Main evidence used as the formal basis for the SOP.</span>
+              <span className="extension-list" aria-label="Supported source extensions">
+                <code>PDF</code>
+                <code>TXT</code>
+                <code>MD</code>
+              </span>
+              <input type="file" multiple accept=".pdf,.txt,.md" onChange={(e) => setSourceFiles(e.target.files)} />
             </label>
             <label>
-              Reference files
-              <input type="file" multiple accept=".pdf,.txt,.md,.xlsx,.xls,.csv" onChange={(e) => setReferenceFiles(e.target.files)} />
+              <span className="file-label-title">Reference materials</span>
+              <span className="file-label-note">Supplemental records used for experience-based additions, not as a replacement for source evidence.</span>
+              <span className="extension-list" aria-label="Supported reference extensions">
+                <code>PDF</code>
+                <code>XLSX</code>
+                <code>CSV</code>
+                <code>MD</code>
+                <code>TXT</code>
+              </span>
+              <input type="file" multiple accept=".pdf,.txt,.md,.xlsx,.csv" onChange={(e) => setReferenceFiles(e.target.files)} />
             </label>
             <label>
-              Template DOCX
+              <span className="file-label-title">SOP template</span>
+              <span className="file-label-note">Defines sections and output structure. DOCX preserves layout; TXT is text-only fallback input.</span>
+              <span className="extension-list" aria-label="Supported template extensions">
+                <code>DOCX</code>
+                <code>TXT</code>
+              </span>
               <input type="file" accept=".docx,.txt" onChange={(e) => setTemplateFile(e.target.files?.[0] || null)} />
             </label>
             <fieldset>
@@ -1323,7 +1352,7 @@ function GlobalEvidencePolicy({ value, onChange }: { value: string; onChange: (v
         <textarea
           value={value}
           onChange={(event) => onChange(event.target.value)}
-          placeholder="Example: source PDF is authoritative; references can only fill missing repair experience; do not present field cases as vendor requirements."
+          placeholder="Example: source documents are authoritative; references can only fill missing repair experience; do not present field cases as vendor requirements."
         />
       </label>
     </details>
@@ -1669,7 +1698,7 @@ function getCurrentTask(
   evidencePlan: EvidencePlan | null,
   draft: GenerationResult | null
 ) {
-  if (!status) return { title: "Create a job first", detail: "Upload at least one source PDF and one DOCX template, then create a job." };
+  if (!status) return { title: "Create a job first", detail: "Upload at least one source document and one SOP template, then create a job." };
   if (status.status === "analyzing") return { title: "Analysis is running", detail: status.message || "The system is parsing files and planning evidence." };
   if (status.status === "generating") return { title: "Draft generation is running", detail: status.message || "The system is generating SOP sections." };
   if (!templateResolution) return { title: "Next: run analysis", detail: "This creates the template section proposal for review." };

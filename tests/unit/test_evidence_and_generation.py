@@ -8,7 +8,7 @@ from backend.app.indexing.embedding import EmbeddingClient
 from backend.app.indexing.sparse import BM25Index, reciprocal_rank_fusion
 from backend.app.indexing.tokenizer import SparseTokenizer, TokenizerConfig
 from backend.app.ingestion.chunking import chunk_text_with_metadata
-from backend.app.ingestion.document_loaders import load_source_pdf
+from backend.app.ingestion.document_loaders import load_reference_file, load_source_file, load_source_pdf
 from backend.app.pipeline.schemas import DomainTermSuggestion, EvidenceRef, GenerationProfile, ImageEvidenceRef, ReferenceDocument, ReferenceItem, SectionEvidence, SourceChunk, SourceDocument, TemplateRefinementSuggestion, TemplateSection, TemplateStructure
 from backend.app.planning.evidence_planner import EvidencePlanner
 
@@ -112,6 +112,28 @@ def test_contextual_chunking_keeps_original_content_separate(tmp_path):
     assert document.chunks[0].content.startswith("Pump maintenance")
     assert document.chunks[0].embedding_text.startswith("Document Context:")
     assert document.chunks[0].content != document.chunks[0].embedding_text
+
+
+def test_source_text_file_is_loaded_as_primary_source(tmp_path):
+    path = tmp_path / "manual.txt"
+    path.write_text("Lockout is required before pressure release.", encoding="utf-8")
+
+    document = load_source_file(str(path))
+
+    assert document.file_name == "manual.txt"
+    assert document.metadata["extraction_method"] == "text_read"
+    assert document.chunks[0].content.startswith("Lockout is required")
+
+
+def test_csv_reference_file_is_loaded_as_rows(tmp_path):
+    path = tmp_path / "records.csv"
+    path.write_text("symptom,fix\npressure alarm,replace seal\n", encoding="utf-8")
+
+    document = load_reference_file(str(path))
+
+    assert document.file_type == "csv"
+    assert document.items[0].location == "row 2"
+    assert "symptom: pressure alarm" in document.items[0].content
 
 
 def test_bm25_and_rrf_rank_expected_items():

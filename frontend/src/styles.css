@@ -193,6 +193,53 @@ label,
   font-weight: var(--weight-medium);
 }
 
+.upload-role-guide {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.upload-role-guide div {
+  background: #f8fafc;
+  border: 1px solid #d7deea;
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+}
+
+.upload-role-guide strong,
+.file-label-title {
+  color: #172033;
+  font-size: var(--text-base);
+  font-weight: var(--weight-title);
+}
+
+.upload-role-guide span,
+.file-label-note {
+  color: #647086;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-body);
+  line-height: 1.45;
+}
+
+.extension-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.extension-list code {
+  background: #eef5ff;
+  border: 1px solid #cfe0f7;
+  border-radius: 999px;
+  color: #244a7f;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-title);
+  letter-spacing: 0;
+  padding: 2px 7px;
+}
+
 input[type="file"],
 select,
 textarea {
@@ -2037,6 +2084,10 @@ pre {
 
   .evidence-topline span {
     max-width: 100%;
+  }
+
+  .upload-role-guide {
+    grid-template-columns: 1fr;
   }
 
   .evidence-candidate-grid {

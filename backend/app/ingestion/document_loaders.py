@@ -113,6 +113,36 @@ class DocxTextBlock:
     metadata: Dict[str, str] = field(default_factory=dict)
 
 
+def load_source_file(
+    path: str,
+    ocr_client: OcrClient = None,
+    chunk_size: int = 900,
+    chunk_overlap: int = 120,
+    chunk_method: str = "vanilla",
+    contextualizer: Optional[Contextualizer] = None,
+) -> SourceDocument:
+    file_path = Path(path)
+    ext = file_path.suffix.lower()
+    if ext == ".pdf":
+        return load_source_pdf(
+            path,
+            ocr_client=ocr_client,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            chunk_method=chunk_method,
+            contextualizer=contextualizer,
+        )
+    if ext in {".txt", ".md"}:
+        return _load_text_source(
+            file_path,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            chunk_method=chunk_method,
+            contextualizer=contextualizer,
+        )
+    raise ValueError(f"Unsupported source document extension: {ext or '(none)'}")
+
+
 def load_source_pdf(
     path: str,
     ocr_client: OcrClient = None,
@@ -157,6 +187,51 @@ def load_source_pdf(
     )
 
 
+def _load_text_source(
+    file_path: Path,
+    chunk_size: int,
+    chunk_overlap: int,
+    chunk_method: str,
+    contextualizer: Optional[Contextualizer],
+) -> SourceDocument:
+    warnings: List[str] = []
+    try:
+        raw_text = file_path.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:
+        warnings.append(f"Could not read source text file: {exc}")
+        raw_text = ""
+    if not raw_text.strip():
+        warnings.append("No source text extracted.")
+    document_id = f"source-{uuid4().hex[:10]}"
+    document_context = _document_context(raw_text, chunk_method, contextualizer)
+    chunks = []
+    for index, chunk in enumerate(chunk_text_with_metadata(raw_text, chunk_size=chunk_size, overlap=chunk_overlap)):
+        embedding_text = _embedding_text(raw_text, chunk, chunk_method, contextualizer, document_context)
+        metadata = dict(chunk.metadata)
+        metadata.update({"chunk_method": chunk_method, "extraction_method": "text_read"})
+        chunks.append(
+            SourceChunk(
+                chunk_id=f"{document_id}-chunk-{index}",
+                document_id=document_id,
+                file_name=file_path.name,
+                content=chunk.text,
+                embedding_text=embedding_text,
+                summary=summarize(chunk.text),
+                page_start=chunk.page_start,
+                page_end=chunk.page_end,
+                metadata=metadata,
+            )
+        )
+    return SourceDocument(
+        document_id=document_id,
+        file_name=file_path.name,
+        raw_text=raw_text,
+        chunks=chunks,
+        metadata={"extraction_method": "text_read", "file_type": file_path.suffix.lower().lstrip(".") or "txt"},
+        warnings=warnings,
+    )
+
+
 def load_reference_file(
     path: str,
     ocr_client: OcrClient = None,
@@ -169,6 +244,8 @@ def load_reference_file(
     ext = file_path.suffix.lower()
     if ext in {".xlsx", ".xls"}:
         return _load_excel(file_path)
+    if ext == ".csv":
+        return _load_csv(file_path)
     if ext == ".pdf":
         source_like = load_source_pdf(
             path,
@@ -346,7 +423,6 @@ def _load_text_reference(
 
 def _load_excel(file_path: Path) -> ReferenceDocument:
     warnings: List[str] = []
-    document_id = f"ref-{uuid4().hex[:10]}"
     rows: List[Dict[str, str]] = []
     try:
         import openpyxl
@@ -370,6 +446,27 @@ def _load_excel(file_path: Path) -> ReferenceDocument:
                 rows = list(csv.DictReader(handle))
         except Exception as csv_exc:
             warnings.append(f"Could not parse Excel/reference table: {csv_exc}")
+    return _table_reference_document(file_path, "excel", rows, warnings)
+
+
+def _load_csv(file_path: Path) -> ReferenceDocument:
+    warnings: List[str] = []
+    rows: List[Dict[str, str]] = []
+    try:
+        with file_path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+    except Exception as exc:
+        warnings.append(f"Could not parse CSV reference table: {exc}")
+    return _table_reference_document(file_path, "csv", rows, warnings)
+
+
+def _table_reference_document(
+    file_path: Path,
+    file_type: str,
+    rows: List[Dict[str, str]],
+    warnings: List[str],
+) -> ReferenceDocument:
+    document_id = f"ref-{uuid4().hex[:10]}"
     items: List[ReferenceItem] = []
     for index, row in enumerate(rows):
         raw = {k: v for k, v in row.items() if str(v).strip()}
@@ -389,7 +486,7 @@ def _load_excel(file_path: Path) -> ReferenceDocument:
     return ReferenceDocument(
         document_id=document_id,
         file_name=file_path.name,
-        file_type="excel",
+        file_type=file_type,
         items=items,
         warnings=warnings,
     )

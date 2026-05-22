@@ -12,7 +12,7 @@ from backend.app.ingestion.ocr_client import OcrClient
 from backend.app.ingestion.pdf_image_extractor import PdfImageExtractor
 from backend.app.ingestion.document_loaders import (
     load_reference_file,
-    load_source_pdf,
+    load_source_file,
     load_template_docx,
 )
 from backend.app.ingestion.section_refiner import SectionRefiner
@@ -65,7 +65,7 @@ class JobService:
         self._reset_analysis_dependents(job_id)
         uploaded = self.artifacts.read_json(job_id, "uploaded_files", UploadedFiles)
         if not uploaded.source_files:
-            raise ValueError("At least one source PDF is required.")
+            raise ValueError("At least one source document is required.")
         if not uploaded.template_file:
             raise ValueError("A DOCX template is required.")
 
@@ -79,10 +79,10 @@ class JobService:
                 JobStatusValue.ANALYZING,
                 "parse_source",
                 0.18 + 0.08 * (index / max(len(uploaded.source_files), 1)),
-                f"Parsing source file {index + 1}/{len(uploaded.source_files)}: {Path(path).name}",
+                f"Parsing source document {index + 1}/{len(uploaded.source_files)}: {Path(path).name}",
             )
             source_docs.append(
-                load_source_pdf(
+                load_source_file(
                     path,
                     ocr_client=ocr_client,
                     chunk_size=self.config.chunk_size,
