@@ -192,11 +192,39 @@ class EvidenceRef(BaseModel):
     reason: str
 
 
+class ImageEvidenceRef(BaseModel):
+    image_id: str
+    evidence_id: str
+    document_id: str
+    file_name: str
+    evidence_type: str = "image"
+    location: Optional[str] = None
+    page_number: Optional[int] = None
+    bbox: List[float] = Field(default_factory=list)
+    page_width: float = 0.0
+    page_height: float = 0.0
+    width: int = 0
+    height: int = 0
+    image_path: str = ""
+    page_image_path: str = ""
+    image_url: str = ""
+    caption: str = ""
+    alt_text: str = ""
+    summary: str = ""
+    excerpt: str = ""
+    score: float = 0.0
+    reason: str = ""
+    insert_recommended: bool = True
+    extraction_method: str = "pymupdf_image"
+    warnings: List[str] = Field(default_factory=list)
+
+
 class SectionEvidence(BaseModel):
     section_id: str
     section_title: str
     source_chunks: List[EvidenceRef] = Field(default_factory=list)
     reference_items: List[EvidenceRef] = Field(default_factory=list)
+    image_items: List[ImageEvidenceRef] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
 
 
@@ -256,6 +284,11 @@ class StructuredBlock(BaseModel):
     callout_type: str = "note"
     source_chunk_ids: List[str] = Field(default_factory=list)
     reference_item_ids: List[str] = Field(default_factory=list)
+    image_evidence_ids: List[str] = Field(default_factory=list)
+    image_id: str = ""
+    image_path: str = ""
+    caption_md: str = ""
+    alt_text: str = ""
     claims: List[str] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
 

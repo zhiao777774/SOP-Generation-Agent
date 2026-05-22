@@ -172,6 +172,17 @@ class ArtifactService:
             if target.exists():
                 target.unlink()
 
+    def delete_intermediate_dir(self, job_id: str, name: str) -> None:
+        self.ensure_job(job_id)
+        target = (self.job_dir(job_id) / "intermediate" / name).resolve()
+        root = (self.job_dir(job_id) / "intermediate").resolve()
+        try:
+            target.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"Invalid intermediate directory: {name}") from exc
+        if target.exists():
+            shutil.rmtree(target)
+
     def update_status(
         self,
         job_id: str,

@@ -649,10 +649,31 @@ legend {
   margin: 2px 0 0;
 }
 
+.model-capability-note {
+  border-radius: 7px;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  line-height: 1.4;
+  margin: 8px 0 0;
+  padding: 8px 10px;
+}
+
+.model-capability-note.vision {
+  background: #ecfdf5;
+  border: 1px solid #9bdac5;
+  color: #0f766e;
+}
+
+.model-capability-note.text-only {
+  background: #f8fafc;
+  border: 1px solid #d8e0eb;
+  color: #526079;
+}
+
 .evidence-summary {
   display: grid;
   gap: 8px;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
 .evidence-summary div {
@@ -894,7 +915,7 @@ legend {
 .evidence-candidate-grid {
   display: grid;
   gap: 10px;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .evidence-candidate-column {
@@ -969,6 +990,31 @@ legend {
   overflow: auto;
   padding: 8px;
   white-space: pre-wrap;
+}
+
+.candidate-image-preview {
+  background: #ffffff;
+  border: 1px solid #e5eaf2;
+  border-radius: 6px;
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 8px;
+}
+
+.candidate-image-preview img {
+  background: #f8fafc;
+  border-radius: 5px;
+  display: block;
+  max-height: 240px;
+  object-fit: contain;
+  width: 100%;
+}
+
+.candidate-image-preview figcaption {
+  color: #526079;
+  font-size: var(--text-sm);
+  line-height: 1.4;
 }
 
 .candidate-technical summary {
@@ -1362,6 +1408,33 @@ legend {
   color: #915f17;
   margin-right: 8px;
   text-transform: uppercase;
+}
+
+.draft-image-block {
+  background: #fbfcfe;
+  border: 1px solid #e5eaf2;
+  border-radius: 6px;
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  max-height: 560px;
+  overflow: auto;
+  padding: 10px;
+}
+
+.draft-image-block img {
+  background: #f8fafc;
+  border-radius: 5px;
+  display: block;
+  max-height: 460px;
+  object-fit: contain;
+  width: 100%;
+}
+
+.draft-image-block figcaption {
+  color: #526079;
+  font-size: var(--text-sm);
+  line-height: 1.45;
 }
 
 .draft-block code,

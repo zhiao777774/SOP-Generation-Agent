@@ -128,6 +128,8 @@ def _check_pipeline_settings(config: AppConfig, errors: List[str]) -> None:
         errors.append("SOP_SECTION_DETECTION_MODE must be one of: rules, rules_llm")
     if config.retrieval_mode not in {"dense_sparse_rrf", "sparse_only"}:
         errors.append("SOP_RETRIEVAL_MODE must be one of: dense_sparse_rrf, sparse_only")
+    if not 0 <= config.image_relevance_threshold <= 1:
+        errors.append("SOP_IMAGE_RELEVANCE_THRESHOLD must be between 0 and 1")
 
 
 def _check_tokenizer_settings(config: AppConfig, errors: List[str]) -> None:

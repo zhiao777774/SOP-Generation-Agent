@@ -9,6 +9,7 @@ from backend.app.core.config import ProviderConfig
 from backend.app.pipeline.schemas import (
     EvidenceRef,
     GenerationProfile,
+    ImageEvidenceRef,
     SectionEvidence,
     StructuredBlock,
     StructuredListItem,
@@ -75,7 +76,8 @@ class SectionGenerator:
 
         source_items = list(section.source_chunks)
         reference_items = list(section.reference_items) if profile.include_reference_cases else []
-        if not source_items and not reference_items:
+        image_items = list(section.image_items)
+        if not source_items and not reference_items and not image_items:
             warnings.append("No evidence was mapped; section body was not generated.")
             return self._draft(section, [], warnings)
 
@@ -89,6 +91,7 @@ class SectionGenerator:
             profile,
             source_items,
             reference_items,
+            image_items,
             global_feedback,
             section_feedback,
             regeneration_feedback,
@@ -103,6 +106,7 @@ class SectionGenerator:
         profile: GenerationProfile,
         source_items: List[EvidenceRef],
         reference_items: List[EvidenceRef],
+        image_items: List[ImageEvidenceRef],
         global_feedback: str,
         section_feedback: str,
         regeneration_feedback: str,
@@ -114,6 +118,7 @@ class SectionGenerator:
             profile,
             source_items,
             reference_items,
+            image_items,
             global_feedback,
             section_feedback,
             regeneration_feedback,
@@ -130,10 +135,11 @@ class SectionGenerator:
                 section.section_id,
                 {item.evidence_id for item in source_items},
                 {item.evidence_id for item in reference_items},
+                {item.evidence_id: item for item in image_items if item.insert_recommended},
             )
             if blocks:
                 warnings.extend(validation_warnings)
-                return blocks, warnings
+                return self._ensure_image_blocks(section.section_id, blocks, image_items), warnings
             warnings.extend(validation_warnings)
             correction = self._correction_prompt(validation_warnings)
             if attempt == 0:
@@ -148,6 +154,7 @@ class SectionGenerator:
         profile: GenerationProfile,
         source_items: List[EvidenceRef],
         reference_items: List[EvidenceRef],
+        image_items: List[ImageEvidenceRef],
         global_feedback: str,
         section_feedback: str,
         regeneration_feedback: str,
@@ -159,10 +166,11 @@ class SectionGenerator:
         )
         source_payload = self._evidence_payload(source_items)
         reference_payload = self._evidence_payload(reference_items)
+        image_payload = self._image_payload(image_items)
         schema = {
             "blocks": [
                 {
-                    "block_type": "paragraph|heading|bullet_list|numbered_list|table|callout",
+                    "block_type": "paragraph|heading|bullet_list|numbered_list|table|callout|image",
                     "content_md": "paragraph, heading, or callout body with restricted inline markdown",
                     "level": 2,
                     "items": [
@@ -175,6 +183,9 @@ class SectionGenerator:
                     ],
                     "headers": ["table header"],
                     "rows": [["table cell with restricted inline markdown"]],
+                    "image_evidence_ids": ["image evidence ids used by this image block"],
+                    "caption_md": "short figure caption with restricted inline markdown",
+                    "alt_text": "brief image description",
                     "source_chunk_ids": ["source evidence ids used by this block"],
                     "reference_item_ids": ["reference evidence ids used by this block"],
                     "claims": ["optional concise factual claim"],
@@ -204,11 +215,13 @@ class SectionGenerator:
             "- 不要輸出 page marker、檔名、row/page 來源標籤或 evidence label。\n\n"
             "格式規則：\n"
             "- 使用 block_type 表達結構，不要在 paragraph 裡用 Markdown 模擬表格或清單。\n"
+            "- 只有當 image evidence 與章節高度相關時，才可使用 block_type=image。\n"
             "- paragraph、list item、table cell 只可使用 **bold**、*italic*、`inline code`。\n"
             "- 不要使用 raw HTML、link、image、markdown heading marker、markdown table pipe row。\n\n"
             f"Reviewer feedback:\n{feedback or '(none)'}\n\n"
             f"Source evidence:\n{json.dumps(source_payload, ensure_ascii=False, indent=2)}\n\n"
             f"Reference evidence:\n{json.dumps(reference_payload, ensure_ascii=False, indent=2)}\n\n"
+            f"Image evidence:\n{json.dumps(image_payload, ensure_ascii=False, indent=2)}\n\n"
             "只輸出 JSON，不要 markdown code fence。JSON schema:\n"
             f"{json.dumps(schema, ensure_ascii=False, indent=2)}"
         )
@@ -271,6 +284,7 @@ class SectionGenerator:
         section_id: str,
         valid_source_ids: set[str],
         valid_reference_ids: set[str],
+        valid_image_items: Dict[str, ImageEvidenceRef],
     ) -> tuple[List[StructuredBlock], List[str]]:
         warnings: List[str] = []
         try:
@@ -290,6 +304,9 @@ class SectionGenerator:
             block_type = self._block_type(item.get("block_type"))
             source_ids = self._valid_ids(item.get("source_chunk_ids"), valid_source_ids)
             reference_ids = self._valid_ids(item.get("reference_item_ids"), valid_reference_ids)
+            image_ids = self._valid_ids(item.get("image_evidence_ids"), set(valid_image_items.keys()))
+            if not image_ids and item.get("image_id"):
+                image_ids = self._valid_ids([item.get("image_id")], set(valid_image_items.keys()))
             list_items, list_warnings = self._parse_list_items(
                 item.get("items"),
                 valid_source_ids,
@@ -303,20 +320,27 @@ class SectionGenerator:
             text = self._plain_text_for_block(block_type, content, list_items, headers, rows)
             block_source_ids = source_ids or self._list_source_ids(list_items)
             block_reference_ids = reference_ids or self._list_reference_ids(list_items)
-            if not text:
+            if block_type == "image":
+                text = str(item.get("caption_md") or item.get("alt_text") or "").strip()
+            if not text and block_type != "image":
                 warnings.append(f"Block {index + 1} has empty content.")
                 continue
             prohibited = self._prohibited_matches(" ".join([content, text, *headers, *[cell for row in rows for cell in row]]))
             if prohibited:
                 warnings.append(f"Block {index + 1} contains prohibited wording: {', '.join(prohibited)}")
                 continue
-            if not block_source_ids and not block_reference_ids:
+            if block_type == "image" and not image_ids:
+                warnings.append(f"Block {index + 1} has no valid image evidence ids.")
+                continue
+            if block_type != "image" and not block_source_ids and not block_reference_ids:
                 warnings.append(f"Block {index + 1} has no valid evidence ids.")
                 continue
             invalid_ids = self._invalid_ids(item.get("source_chunk_ids"), valid_source_ids)
             invalid_ids.extend(self._invalid_ids(item.get("reference_item_ids"), valid_reference_ids))
+            invalid_ids.extend(self._invalid_ids(item.get("image_evidence_ids"), set(valid_image_items.keys())))
             if invalid_ids:
                 warnings.append(f"Block {index + 1} referenced unknown evidence ids: {', '.join(invalid_ids)}")
+            image_item = valid_image_items.get(image_ids[0]) if image_ids else None
             blocks.append(
                 StructuredBlock(
                     block_id=f"{section_id}-b{len(blocks) + 1}",
@@ -330,6 +354,11 @@ class SectionGenerator:
                     callout_type=str(item.get("callout_type") or "note"),
                     source_chunk_ids=source_ids,
                     reference_item_ids=reference_ids,
+                    image_evidence_ids=image_ids,
+                    image_id=image_item.image_id if image_item else "",
+                    image_path=image_item.image_path if image_item else "",
+                    caption_md=self._clean_evidence_text(str(item.get("caption_md") or "")),
+                    alt_text=self._clean_evidence_text(str(item.get("alt_text") or "")),
                     claims=self._string_list(item.get("claims")),
                     warnings=self._string_list(item.get("warnings")),
                 )
@@ -393,6 +422,23 @@ class SectionGenerator:
             )
         return payload
 
+    def _image_payload(self, items: List[ImageEvidenceRef]) -> List[Dict[str, str]]:
+        payload = []
+        for item in items:
+            payload.append(
+                {
+                    "id": item.evidence_id,
+                    "file_name": item.file_name,
+                    "location": item.location or "",
+                    "caption": item.caption,
+                    "reason": item.reason,
+                    "relevance": f"{item.score:.2f}",
+                    "insert_recommended": str(item.insert_recommended).lower(),
+                    "extraction_method": item.extraction_method,
+                }
+            )
+        return payload
+
     def _extract_json(self, raw: str) -> Dict[str, Any]:
         stripped = raw.strip()
         fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", stripped, re.DOTALL)
@@ -429,7 +475,7 @@ class SectionGenerator:
             "numbered": "numbered_list",
         }
         block_type = aliases.get(block_type, block_type)
-        if block_type not in {"paragraph", "heading", "bullet_list", "numbered_list", "table", "callout"}:
+        if block_type not in {"paragraph", "heading", "bullet_list", "numbered_list", "table", "callout", "image"}:
             return "paragraph"
         return block_type
 
@@ -464,6 +510,8 @@ class SectionGenerator:
             return "\n".join(self._list_text(item) for item in items) or content
         if block_type == "table":
             return "\n".join(" | ".join(row) for row in ([headers] if headers else []) + rows)
+        if block_type == "image":
+            return content
         return content
 
     def _list_text(self, item: StructuredListItem) -> str:
@@ -512,3 +560,33 @@ class SectionGenerator:
             blocks=blocks,
             warnings=warnings,
         )
+
+    def _ensure_image_blocks(
+        self,
+        section_id: str,
+        blocks: List[StructuredBlock],
+        image_items: List[ImageEvidenceRef],
+    ) -> List[StructuredBlock]:
+        used_ids = {image_id for block in blocks for image_id in block.image_evidence_ids}
+        next_index = len(blocks) + 1
+        for image in image_items:
+            if not image.insert_recommended:
+                continue
+            if image.evidence_id in used_ids:
+                continue
+            blocks.append(
+                StructuredBlock(
+                    block_id=f"{section_id}-b{next_index}",
+                    block_type="image",
+                    text=image.caption or image.alt_text,
+                    content_md=image.caption or image.alt_text,
+                    image_evidence_ids=[image.evidence_id],
+                    image_id=image.image_id,
+                    image_path=image.image_path,
+                    caption_md=image.caption,
+                    alt_text=image.alt_text,
+                    claims=[f"Image relevance score {image.score:.2f}"],
+                )
+            )
+            next_index += 1
+        return blocks

@@ -301,6 +301,22 @@ def get_artifact(request: Request, job_id: str, artifact_name: str):
         raise HTTPException(status_code=404, detail=str(exc))
 
 
+@app.get("/api/jobs/{job_id}/images/{image_id}")
+def get_job_image(request: Request, job_id: str, image_id: str):
+    _ensure_owned_job(job_id, _require_owner_id(request))
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", image_id):
+        raise HTTPException(status_code=400, detail="Invalid image_id")
+    image_root = (artifacts.job_dir(job_id) / "intermediate" / "images").resolve()
+    path = (image_root / f"{image_id}.png").resolve()
+    try:
+        path.relative_to(image_root)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid image_id") from exc
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Image not found")
+    return FileResponse(path, media_type="image/png", filename=f"{image_id}.png")
+
+
 @app.get("/api/jobs/{job_id}/download/{artifact_name}")
 def download_artifact(request: Request, job_id: str, artifact_name: str):
     _ensure_owned_job(job_id, _require_owner_id(request))

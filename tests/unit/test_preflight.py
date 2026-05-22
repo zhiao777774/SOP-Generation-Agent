@@ -220,6 +220,15 @@ def test_preflight_rejects_invalid_pipeline_modes(tmp_path):
     assert "SOP_SCRIPT_NORMALIZATION must be one of" in str(exc.value)
 
 
+def test_preflight_rejects_invalid_image_relevance_threshold(tmp_path):
+    config = replace(make_config(tmp_path), image_relevance_threshold=1.5)
+
+    with pytest.raises(PreflightError) as exc:
+        run_preflight(config)
+
+    assert "SOP_IMAGE_RELEVANCE_THRESHOLD must be between 0 and 1" in str(exc.value)
+
+
 def test_preflight_fails_when_ocr_config_is_partial(tmp_path):
     config = make_config(tmp_path, ocr=ProviderConfig("http://ocr.local/v1", None, None))
 

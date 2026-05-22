@@ -9,6 +9,7 @@ from backend.app.indexing.embedding import EmbeddingClient
 from backend.app.indexing.tokenizer import TokenizerConfig
 from backend.app.ingestion.contextualizer import Contextualizer
 from backend.app.ingestion.ocr_client import OcrClient
+from backend.app.ingestion.pdf_image_extractor import PdfImageExtractor
 from backend.app.ingestion.document_loaders import (
     load_reference_file,
     load_source_pdf,
@@ -34,6 +35,7 @@ from backend.app.pipeline.schemas import (
     UploadedFiles,
 )
 from backend.app.planning.evidence_planner import EvidencePlanner
+from backend.app.planning.image_evidence_planner import ImageEvidencePlanner, ImagePlanningConfig
 from backend.app.rendering.docx_renderer import DocxRenderer
 from backend.app.reports.report_builders import (
     build_coverage_report,
@@ -188,6 +190,7 @@ class JobService:
                 "final_sop.docx",
             ],
         )
+        self.artifacts.delete_intermediate_dir(job_id, "images")
         self.artifacts.append_log(
             job_id,
             "template_refinement",
@@ -334,6 +337,7 @@ class JobService:
             suggestion if isinstance(suggestion, DomainTermSuggestion) else DomainTermSuggestion(**suggestion)
             for suggestion in domain_suggestions.get("suggestions", [])
         ]
+        self.artifacts.delete_intermediate_dir(job_id, "images")
         temporary_terms = {
             suggestion.term: max(float(suggestion.confidence), 1.0)
             for suggestion in parsed_suggestions
@@ -382,6 +386,32 @@ class JobService:
             ),
             global_feedback=global_feedback,
             section_feedback=section_feedback or {},
+        )
+        uploaded = self.artifacts.read_json(job_id, "uploaded_files", UploadedFiles)
+        evidence_plan = ImageEvidencePlanner(
+            self._provider_config(job_id, "llm"),
+            PdfImageExtractor(
+                self.artifacts.job_dir(job_id),
+                min_width=self.config.image_min_width,
+                min_height=self.config.image_min_height,
+            ),
+            ImagePlanningConfig(
+                relevance_threshold=self.config.image_relevance_threshold,
+                top_k_per_section=self.config.image_top_k_per_section,
+                max_inserts_per_section=self.config.image_max_inserts_per_section,
+                crop_fallback_enabled=self.config.vlm_crop_fallback_enabled,
+            ),
+        ).attach_images(
+            evidence_plan,
+            uploaded.source_files,
+            uploaded.reference_files,
+            progress_callback=lambda step, message, progress: self.artifacts.update_status(
+                job_id,
+                JobStatusValue.ANALYZING,
+                step,
+                progress,
+                message,
+            ),
         )
         self.artifacts.write_json(job_id, "evidence_plan", evidence_plan)
         self.artifacts.write_json(

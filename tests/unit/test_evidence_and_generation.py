@@ -9,7 +9,7 @@ from backend.app.indexing.sparse import BM25Index, reciprocal_rank_fusion
 from backend.app.indexing.tokenizer import SparseTokenizer, TokenizerConfig
 from backend.app.ingestion.chunking import chunk_text_with_metadata
 from backend.app.ingestion.document_loaders import load_source_pdf
-from backend.app.pipeline.schemas import DomainTermSuggestion, EvidenceRef, GenerationProfile, ReferenceDocument, ReferenceItem, SectionEvidence, SourceChunk, SourceDocument, TemplateRefinementSuggestion, TemplateSection, TemplateStructure
+from backend.app.pipeline.schemas import DomainTermSuggestion, EvidenceRef, GenerationProfile, ImageEvidenceRef, ReferenceDocument, ReferenceItem, SectionEvidence, SourceChunk, SourceDocument, TemplateRefinementSuggestion, TemplateSection, TemplateStructure
 from backend.app.planning.evidence_planner import EvidencePlanner
 
 
@@ -269,6 +269,67 @@ def test_llm_generated_blocks_carry_paragraph_level_provenance(monkeypatch):
     assert draft.blocks[0].source_chunk_ids == ["source-1-c1"]
     assert draft.blocks[1].reference_item_ids == ["ref-1-i1"]
     assert draft.blocks[0].claims == ["Lockout and pressure release are required."]
+
+
+def test_generation_appends_recommended_image_blocks(monkeypatch, tmp_path):
+    image_path = tmp_path / "figure.png"
+    image_path.write_bytes(b"fake")
+
+    def fake_post(url, headers, json, timeout):
+        return FakeLLMResponse(
+            json_module.dumps(
+                {
+                    "blocks": [
+                        {
+                            "block_type": "paragraph",
+                            "text": "確認操作介面顯示正常後再執行生產參數設定。",
+                            "source_chunk_ids": ["source-1-c1"],
+                        }
+                    ]
+                }
+            )
+        )
+
+    monkeypatch.setattr("backend.app.generation.section_generator.requests.post", fake_post)
+    generator = SectionGenerator(ProviderConfig("http://llm.example/v1", None, "sop-writer"))
+    section = SectionEvidence(
+        section_id="s1",
+        section_title="操作程序",
+        source_chunks=[evidence("source-1-c1", "source", "操作介面包含生產參數設定畫面。")],
+        image_items=[
+            ImageEvidenceRef(
+                image_id="img-1",
+                evidence_id="img-1",
+                document_id="source-1",
+                file_name="manual.pdf",
+                location="page 2",
+                image_path=str(image_path),
+                caption="操作介面示意圖",
+                alt_text="HMI operation screen",
+                score=0.91,
+                reason="The crop shows the operation screen for this section.",
+                insert_recommended=True,
+            ),
+            ImageEvidenceRef(
+                image_id="img-2",
+                evidence_id="img-2",
+                document_id="source-1",
+                file_name="manual.pdf",
+                location="page 3",
+                image_path=str(image_path),
+                caption="非預設插入圖片",
+                score=0.88,
+                reason="Relevant but below insertion limit.",
+                insert_recommended=False,
+            ),
+        ],
+    )
+
+    draft = generator.generate(section, GenerationProfile())
+
+    assert [block.block_type for block in draft.blocks] == ["paragraph", "image"]
+    assert draft.blocks[1].image_evidence_ids == ["img-1"]
+    assert draft.blocks[1].caption_md == "操作介面示意圖"
 
 
 def test_generation_language_guidance_does_not_include_section_title_in_body(monkeypatch):

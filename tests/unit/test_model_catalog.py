@@ -18,6 +18,7 @@ def test_model_catalog_lists_agentplayground_style_models(tmp_path):
                                 "id": "qwen3:8b",
                                 "name": "Qwen3 8B",
                                 "contextWindow": 32768,
+                                "input": ["text", "image"],
                             }
                         ],
                     }
@@ -35,10 +36,13 @@ def test_model_catalog_lists_agentplayground_style_models(tmp_path):
         "name": "Qwen3 8B",
         "provider": "custom",
         "contextWindow": 32768,
+        "input": ["text", "image"],
+        "supportsImages": True,
     }
     assert catalog.resolve_llm("qwen3:8b").api_base == "http://model.local/v1"
     assert catalog.resolve_llm("qwen3:8b").api_key == "token"
     assert catalog.resolve_llm("qwen3:8b").model == "qwen3:8b"
+    assert catalog.resolve_llm("qwen3:8b").supports_images is True
 
 
 def test_model_catalog_uses_llm_timeout_env_for_selected_models(tmp_path, monkeypatch):
@@ -95,6 +99,12 @@ def test_retrieval_tuning_loads_from_env(monkeypatch):
     monkeypatch.setenv("SOP_DOMAIN_TOKEN_EXTRACTION", "false")
     monkeypatch.setenv("SOP_DOMAIN_TERM_LLM_ENABLED", "true")
     monkeypatch.setenv("SOP_DOMAIN_TERM_CONFIDENCE_THRESHOLD", "0.9")
+    monkeypatch.setenv("SOP_IMAGE_RELEVANCE_THRESHOLD", "0.82")
+    monkeypatch.setenv("SOP_IMAGE_TOP_K_PER_SECTION", "4")
+    monkeypatch.setenv("SOP_IMAGE_MAX_INSERTS_PER_SECTION", "2")
+    monkeypatch.setenv("SOP_IMAGE_MIN_WIDTH", "160")
+    monkeypatch.setenv("SOP_IMAGE_MIN_HEIGHT", "100")
+    monkeypatch.setenv("SOP_VLM_CROP_FALLBACK_ENABLED", "false")
 
     config = load_config()
 
@@ -118,6 +128,12 @@ def test_retrieval_tuning_loads_from_env(monkeypatch):
     assert config.domain_token_extraction is False
     assert config.domain_term_llm_enabled is True
     assert config.domain_term_confidence_threshold == 0.9
+    assert config.image_relevance_threshold == 0.82
+    assert config.image_top_k_per_section == 4
+    assert config.image_max_inserts_per_section == 2
+    assert config.image_min_width == 160
+    assert config.image_min_height == 100
+    assert config.vlm_crop_fallback_enabled is False
 
 
 def test_client_cookie_settings_load_from_env(monkeypatch):

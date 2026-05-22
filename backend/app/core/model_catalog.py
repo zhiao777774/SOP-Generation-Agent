@@ -13,6 +13,11 @@ class CatalogModel:
     name: str
     provider: str
     context_window: Optional[int] = None
+    input: tuple[str, ...] = ()
+
+    @property
+    def supports_images(self) -> bool:
+        return "image" in {item.strip().lower() for item in self.input}
 
 
 class ModelCatalog:
@@ -30,6 +35,7 @@ class ModelCatalog:
                         name=model.get("name", model["id"]),
                         provider=provider_name,
                         context_window=model.get("contextWindow") or model.get("context_window"),
+                        input=_model_input(model),
                     )
                 )
         return models
@@ -61,6 +67,7 @@ class ModelCatalog:
             api_key=api_key,
             model=model["id"],
             timeout_seconds=_timeout_seconds(provider, model),
+            input=_model_input(model),
         )
 
     def _load_raw(self, path: Path) -> Dict:
@@ -91,4 +98,15 @@ def catalog_model_to_dict(model: CatalogModel) -> Dict:
         "name": model.name,
         "provider": model.provider,
         "contextWindow": model.context_window,
+        "input": list(model.input),
+        "supportsImages": model.supports_images,
     }
+
+
+def _model_input(model: Dict) -> tuple[str, ...]:
+    value = model.get("input") or []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return ()
+    return tuple(str(item).strip().lower() for item in value if str(item).strip())

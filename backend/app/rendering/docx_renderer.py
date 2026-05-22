@@ -75,6 +75,8 @@ class DocxRenderer:
             table = self._add_table(parent, block)
             self._element(current).addnext(table._tbl)
             return table
+        if block.block_type == "image":
+            return self._insert_image_after(current, block)
 
         inserted = []
         for paragraph_spec in self._paragraph_specs(block):
@@ -99,6 +101,8 @@ class DocxRenderer:
     def _append_block(self, document, block: StructuredBlock):
         if block.block_type == "table":
             return self._add_table(document, block)
+        if block.block_type == "image":
+            return self._append_image(document, block)
 
         current = None
         for paragraph_spec in self._paragraph_specs(block):
@@ -108,6 +112,38 @@ class DocxRenderer:
             self._write_inline(paragraph, self._fallback_content(paragraph_spec, style_applied))
             current = paragraph
         return current
+
+    def _insert_image_after(self, current, block: StructuredBlock):
+        image_paragraph = self._insert_paragraph_after(current)
+        self._write_image_or_fallback(image_paragraph, block)
+        caption = self._content(block) or block.caption_md
+        if caption:
+            caption_paragraph = self._insert_paragraph_after(image_paragraph)
+            self._write_inline(caption_paragraph, caption)
+            return caption_paragraph
+        return image_paragraph
+
+    def _append_image(self, document, block: StructuredBlock):
+        image_paragraph = document.add_paragraph()
+        self._write_image_or_fallback(image_paragraph, block)
+        caption = self._content(block) or block.caption_md
+        if caption:
+            caption_paragraph = document.add_paragraph()
+            self._write_inline(caption_paragraph, caption)
+            return caption_paragraph
+        return image_paragraph
+
+    def _write_image_or_fallback(self, paragraph, block: StructuredBlock) -> None:
+        image_path = Path(block.image_path) if block.image_path else None
+        if not image_path or not image_path.exists():
+            self._write_inline(paragraph, block.alt_text or block.caption_md or "[image unavailable]")
+            return
+        try:
+            from docx.shared import Inches
+
+            paragraph.add_run().add_picture(str(image_path), width=Inches(5.8))
+        except Exception:
+            self._write_inline(paragraph, block.alt_text or block.caption_md or "[image unavailable]")
 
     def _paragraph_specs(self, block: StructuredBlock) -> List[dict]:
         block_type = block.block_type
@@ -126,6 +162,8 @@ class DocxRenderer:
         if block_type == "callout":
             prefix = block.callout_type.upper() if block.callout_type else "NOTE"
             return [{"style": None, "content": f"{prefix}: {self._content(block)}", "indent": 0}]
+        if block_type == "image":
+            return []
         return [{"style": None, "content": self._content(block), "indent": 0}]
 
     def _list_specs(
@@ -353,4 +391,6 @@ class DocxRenderer:
             return [self._item_content(item) for item in block.items] or [self._content(block)]
         if block.block_type == "table":
             return ["\t".join(row) for row in ([block.headers] if block.headers else []) + block.rows]
+        if block.block_type == "image":
+            return [block.caption_md or block.alt_text or "[image]"]
         return [self._content(block)]

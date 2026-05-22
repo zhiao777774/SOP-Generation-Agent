@@ -31,9 +31,15 @@ type JobSummary = {
 
 type EvidenceRef = {
   evidence_id: string;
+  image_id?: string;
   file_name: string;
   evidence_type: string;
   location?: string;
+  image_url?: string;
+  caption?: string;
+  alt_text?: string;
+  extraction_method?: string;
+  insert_recommended?: boolean;
   summary: string;
   excerpt: string;
   score: number;
@@ -45,6 +51,7 @@ type EvidenceSection = {
   section_title: string;
   source_chunks: EvidenceRef[];
   reference_items: EvidenceRef[];
+  image_items: EvidenceRef[];
   warnings: string[];
 };
 
@@ -118,6 +125,11 @@ type DraftBlock = {
   callout_type?: string;
   source_chunk_ids: string[];
   reference_item_ids: string[];
+  image_evidence_ids?: string[];
+  image_id?: string;
+  image_path?: string;
+  caption_md?: string;
+  alt_text?: string;
   claims: string[];
   warnings: string[];
 };
@@ -139,7 +151,7 @@ type DraftSection = {
 
 type GenerationResult = { sections: DraftSection[]; warnings: string[] };
 type LogEntry = { timestamp: string; level: string; step: string; message: string; technical_detail?: string };
-type CatalogModel = { id: string; name: string; provider: string; contextWindow?: number };
+type CatalogModel = { id: string; name: string; provider: string; contextWindow?: number; input?: string[]; supportsImages?: boolean };
 type StepState = "locked" | "ready" | "running" | "pending" | "done" | "auto";
 type ToastAction = "draft_review" | "downloads";
 type ToastMessage = { id: number; title: string; message: string; action?: ToastAction };
@@ -189,12 +201,17 @@ export default function App() {
   const evidenceById = useMemo(() => {
     const lookup: Record<string, EvidenceRef> = {};
     evidencePlan?.sections.forEach((section) => {
-      section.source_chunks.concat(section.reference_items).forEach((item) => {
+      section.source_chunks.concat(section.reference_items, section.image_items || []).forEach((item) => {
         lookup[item.evidence_id] = item;
       });
     });
     return lookup;
   }, [evidencePlan]);
+
+  const selectedModel = useMemo(
+    () => models.find((model) => model.id === selectedModelId) || null,
+    [models, selectedModelId]
+  );
 
   useEffect(() => {
     apiFetch("/api/models")
@@ -673,6 +690,11 @@ export default function App() {
                   ))}
                 </select>
               </label>
+              <p className={`model-capability-note ${selectedModel?.supportsImages ? "vision" : "text-only"}`}>
+                {selectedModel?.supportsImages
+                  ? "This model can review PDF images and add high-relevance figures to the draft."
+                  : "This model will generate text only; PDF images will not be added to the draft."}
+              </p>
             </fieldset>
             <fieldset>
               <legend>Output language</legend>
@@ -780,6 +802,7 @@ export default function App() {
                   <EvidenceReviewGuide />
                   <GlobalEvidencePolicy value={evidenceFeedback} onChange={setEvidenceFeedback} />
                   <EvidencePlanReviewList
+                    jobId={jobId}
                     sections={evidencePlan.sections}
                     metadata={evidencePlan.retrieval_metadata}
                     sectionFeedback={sectionFeedback}
@@ -867,6 +890,7 @@ export default function App() {
                     block={block}
                     index={index}
                     evidenceById={evidenceById}
+                    jobId={jobId}
                   />
                 ))}
                 <label className="wide-label draft-feedback-label">
@@ -1222,12 +1246,14 @@ function isGeneralSopFallbackWarning(value: string) {
 function EvidenceSummary({ sections, warnings }: { sections: EvidenceSection[]; warnings: string[] }) {
   const sourceCount = sections.reduce((total, section) => total + section.source_chunks.length, 0);
   const referenceCount = sections.reduce((total, section) => total + section.reference_items.length, 0);
+  const imageCount = sections.reduce((total, section) => total + (section.image_items || []).length, 0);
   const sectionWarnings = sections.reduce((total, section) => total + section.warnings.length, 0);
   return (
     <div className="evidence-summary">
       <div><strong>{sections.length}</strong><span>sections</span></div>
       <div><strong>{sourceCount}</strong><span>source chunks</span></div>
       <div><strong>{referenceCount}</strong><span>reference records</span></div>
+      <div><strong>{imageCount}</strong><span>image candidates</span></div>
       <div><strong>{warnings.length + sectionWarnings}</strong><span>warnings</span></div>
     </div>
   );
@@ -1249,6 +1275,7 @@ function EvidenceReviewGuide() {
       <ul>
         <li>Each SOP section has enough source evidence to support the draft.</li>
         <li>Reference records are only used as supplementary field experience.</li>
+        <li>Image candidates are included only when the selected model judged them highly relevant.</li>
         <li>Warnings or source/reference conflicts are acceptable before generation.</li>
         <li>All planned candidates are shown below with their location, reason, and excerpt.</li>
       </ul>
@@ -1324,11 +1351,13 @@ function EvidenceActionSummary({
 }
 
 function EvidencePlanReviewList({
+  jobId,
   sections,
   metadata,
   sectionFeedback,
   setSectionFeedback
 }: {
+  jobId: string;
   sections: EvidenceSection[];
   metadata?: EvidencePlan["retrieval_metadata"];
   sectionFeedback: Record<string, string>;
@@ -1378,6 +1407,7 @@ function EvidencePlanReviewList({
         <EvidenceSectionReviewCard
           key={section.section_id}
           section={section}
+          jobId={jobId}
           openByDefault={index === 0}
           feedback={sectionFeedback[section.section_id] || ""}
           setFeedback={(value) => setSectionFeedback({ ...sectionFeedback, [section.section_id]: value })}
@@ -1389,30 +1419,34 @@ function EvidencePlanReviewList({
 
 function EvidenceSectionReviewCard({
   section,
+  jobId,
   openByDefault,
   feedback,
   setFeedback
 }: {
   section: EvidenceSection;
+  jobId: string;
   openByDefault: boolean;
   feedback: string;
   setFeedback: (value: string) => void;
 }) {
   const topSource = section.source_chunks[0];
   const topReference = section.reference_items[0];
+  const topImage = (section.image_items || [])[0];
   return (
     <details className="evidence-plan-row" open={openByDefault || section.warnings.length > 0 || Boolean(feedback.trim())}>
       <summary className="evidence-plan-summary">
         <div>
           <strong>{section.section_title}</strong>
           <small>
-            {section.source_chunks.length} source · {section.reference_items.length} reference · {section.warnings.length} warning{section.warnings.length === 1 ? "" : "s"}
+            {section.source_chunks.length} source · {section.reference_items.length} reference · {(section.image_items || []).length} image · {section.warnings.length} warning{section.warnings.length === 1 ? "" : "s"}
           </small>
         </div>
         <div className="evidence-topline">
           {topSource && <span>Source: {topSource.file_name}{topSource.location ? `, ${topSource.location}` : ""}</span>}
           {topReference && <span>Reference: {topReference.file_name}{topReference.location ? `, ${topReference.location}` : ""}</span>}
-          {!topSource && !topReference && <span>No planned candidates.</span>}
+          {topImage && <span>Image: {topImage.file_name}{topImage.location ? `, ${topImage.location}` : ""}</span>}
+          {!topSource && !topReference && !topImage && <span>No planned candidates.</span>}
         </div>
       </summary>
       <div className="evidence-plan-content">
@@ -1427,8 +1461,9 @@ function EvidenceSectionReviewCard({
           />
         </label>
         <div className="evidence-candidate-grid">
-          <EvidenceCandidateColumn title="Source candidates" items={section.source_chunks} />
-          <EvidenceCandidateColumn title="Reference candidates" items={section.reference_items} />
+          <EvidenceCandidateColumn title="Source candidates" items={section.source_chunks} jobId={jobId} />
+          <EvidenceCandidateColumn title="Reference candidates" items={section.reference_items} jobId={jobId} />
+          <EvidenceCandidateColumn title="Image candidates" items={section.image_items || []} jobId={jobId} />
         </div>
       </div>
     </details>
@@ -1455,21 +1490,22 @@ function QuickEvidenceFeedback({ feedback, setFeedback }: { feedback: string; se
   );
 }
 
-function EvidenceCandidateColumn({ title, items }: { title: string; items: EvidenceRef[] }) {
+function EvidenceCandidateColumn({ title, items, jobId }: { title: string; items: EvidenceRef[]; jobId: string }) {
   return (
     <div className="evidence-candidate-column">
       <h4>{title}</h4>
       {items.length === 0 && <p className="muted">No candidates planned.</p>}
       {items.map((item, index) => (
-        <EvidenceCandidateCard key={item.evidence_id} item={item} rank={index + 1} />
+        <EvidenceCandidateCard key={item.evidence_id} item={item} rank={index + 1} jobId={jobId} />
       ))}
     </div>
   );
 }
 
-function EvidenceCandidateCard({ item, rank }: { item: EvidenceRef; rank: number }) {
+function EvidenceCandidateCard({ item, rank, jobId }: { item: EvidenceRef; rank: number; jobId: string }) {
   const excerpt = item.excerpt || item.summary || "No preview text available.";
   const summaryIsDistinct = item.summary && !isSimilarText(item.summary, excerpt);
+  const isImage = item.evidence_type === "image";
   return (
     <article className="evidence-candidate-card">
       <div className="candidate-meta">
@@ -1477,12 +1513,21 @@ function EvidenceCandidateCard({ item, rank }: { item: EvidenceRef; rank: number
         <div>
           <strong>{item.file_name}</strong>
           <small>{item.location || "location unknown"} · score {item.score.toFixed(2)}</small>
+          {isImage && item.insert_recommended === false && <small>Review candidate only · not inserted by default</small>}
         </div>
       </div>
-      <pre className="candidate-excerpt">{excerpt}</pre>
+      {isImage ? (
+        <figure className="candidate-image-preview">
+          <img src={jobImageUrl(jobId, item.image_id || item.evidence_id)} alt={item.alt_text || item.caption || item.summary || "PDF image candidate"} />
+          <figcaption>{item.caption || item.summary || "PDF image candidate"}</figcaption>
+        </figure>
+      ) : (
+        <pre className="candidate-excerpt">{excerpt}</pre>
+      )}
       <details className="candidate-technical">
         <summary>Why selected</summary>
         <p>{item.reason}</p>
+        {isImage && item.extraction_method && <p>Extraction: {item.extraction_method}</p>}
         {summaryIsDistinct && <p>Summary: {item.summary}</p>}
       </details>
     </article>
@@ -1506,13 +1551,14 @@ function evidenceSectionMatches(
     ...section.warnings,
     ...section.source_chunks.flatMap(evidenceSearchFields),
     ...section.reference_items.flatMap(evidenceSearchFields),
+    ...(section.image_items || []).flatMap(evidenceSearchFields),
     sectionFeedback[section.section_id] || ""
   ].join("\n").toLowerCase();
   return searchable.includes(normalized);
 }
 
 function evidenceSearchFields(item: EvidenceRef) {
-  return [item.file_name, item.location || "", item.summary, item.excerpt, item.reason];
+  return [item.file_name, item.location || "", item.summary, item.excerpt, item.reason, item.caption || "", item.alt_text || ""];
 }
 
 function isSimilarText(left: string, right: string) {
@@ -1726,24 +1772,27 @@ function LogPanel({ logs }: { logs: LogEntry[] }) {
 function DraftBlockView({
   block,
   index,
-  evidenceById
+  evidenceById,
+  jobId
 }: {
   block: DraftBlock;
   index: number;
   evidenceById: Record<string, EvidenceRef>;
+  jobId: string;
 }) {
   const sourceIds = collectDraftSourceIds(block);
   const referenceIds = collectDraftReferenceIds(block);
-  const evidenceIds = [...sourceIds, ...referenceIds];
+  const imageIds = block.image_evidence_ids || [];
+  const evidenceIds = [...sourceIds, ...referenceIds, ...imageIds];
   return (
     <article className={`draft-block ${block.block_type || "paragraph"}`}>
       <div className="draft-block-header">
         <strong>{draftBlockLabel(block, index)}</strong>
         <span>
-          {sourceIds.length} source · {referenceIds.length} reference
+          {sourceIds.length} source · {referenceIds.length} reference{imageIds.length ? ` · ${imageIds.length} image` : ""}
         </span>
       </div>
-      <DraftBlockContent block={block} />
+      <DraftBlockContent block={block} jobId={jobId} />
       {block.warnings.map((warning) => <p className="warning" key={warning}>{warning}</p>)}
       <details className="draft-evidence">
         <summary>Block evidence</summary>
@@ -1753,8 +1802,16 @@ function DraftBlockView({
   );
 }
 
-function DraftBlockContent({ block }: { block: DraftBlock }) {
+function DraftBlockContent({ block, jobId }: { block: DraftBlock; jobId: string }) {
   const content = block.content_md || block.text || "";
+  if (block.block_type === "image") {
+    return (
+      <figure className="draft-image-block">
+        <img src={jobImageUrl(jobId, block.image_id || block.image_evidence_ids?.[0] || "")} alt={block.alt_text || block.caption_md || content || "Generated SOP figure"} />
+        {(block.caption_md || content) && <figcaption>{renderInlineMarkdown(block.caption_md || content)}</figcaption>}
+      </figure>
+    );
+  }
   if (block.block_type === "heading") {
     return <h4 className="draft-rich-heading">{renderInlineMarkdown(content)}</h4>;
   }
@@ -1825,6 +1882,7 @@ function draftBlockLabel(block: DraftBlock, index: number) {
   if (block.block_type === "numbered_list" || block.block_type === "numbered") return `Numbered list ${index + 1}`;
   if (block.block_type === "table") return `Table ${index + 1}`;
   if (block.block_type === "callout") return `Callout ${index + 1}`;
+  if (block.block_type === "image") return `Image ${index + 1}`;
   return `Paragraph ${index + 1}`;
 }
 
@@ -1891,6 +1949,11 @@ async function postJson(path: string, body: unknown) {
   });
   if (!response.ok) throw new ApiError(response.status, await response.text());
   return response.json();
+}
+
+function jobImageUrl(jobId: string, imageId: string) {
+  if (!jobId || !imageId) return "";
+  return `${API}/api/jobs/${jobId}/images/${encodeURIComponent(imageId)}`;
 }
 
 function apiFetch(path: string, init: RequestInit = {}) {

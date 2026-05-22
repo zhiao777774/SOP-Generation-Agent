@@ -12,6 +12,11 @@ class ProviderConfig:
     api_key: Optional[str]
     model: Optional[str]
     timeout_seconds: float = 15.0
+    input: tuple[str, ...] = ()
+
+    @property
+    def supports_images(self) -> bool:
+        return "image" in {item.strip().lower() for item in self.input}
 
 
 @dataclass(frozen=True)
@@ -49,6 +54,12 @@ class AppConfig:
     client_cookie_secure: bool = False
     client_cookie_samesite: str = "lax"
     cors_origins: tuple[str, ...] = ("*",)
+    image_relevance_threshold: float = 0.75
+    image_top_k_per_section: int = 3
+    image_max_inserts_per_section: int = 1
+    image_min_width: int = 120
+    image_min_height: int = 80
+    vlm_crop_fallback_enabled: bool = True
 
 
 def _default_project_path(relative_path: str) -> Path:
@@ -179,4 +190,10 @@ def load_config() -> AppConfig:
         client_cookie_secure=_bool_from_env("SOP_CLIENT_COOKIE_SECURE", False),
         client_cookie_samesite=os.getenv("SOP_CLIENT_COOKIE_SAMESITE", "lax").strip().lower(),
         cors_origins=cors_origins,
+        image_relevance_threshold=_float_from_env("SOP_IMAGE_RELEVANCE_THRESHOLD", 0.75),
+        image_top_k_per_section=max(_int_from_env("SOP_IMAGE_TOP_K_PER_SECTION", 3), 0),
+        image_max_inserts_per_section=max(_int_from_env("SOP_IMAGE_MAX_INSERTS_PER_SECTION", 1), 0),
+        image_min_width=max(_int_from_env("SOP_IMAGE_MIN_WIDTH", 120), 1),
+        image_min_height=max(_int_from_env("SOP_IMAGE_MIN_HEIGHT", 80), 1),
+        vlm_crop_fallback_enabled=_bool_from_env("SOP_VLM_CROP_FALLBACK_ENABLED", True),
     )
