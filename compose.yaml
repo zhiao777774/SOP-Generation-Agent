@@ -56,7 +56,7 @@ services:
       SOP_OCR_TIMEOUT_SECONDS: ${SOP_OCR_TIMEOUT_SECONDS:-120}
     volumes:
       - ./data/jobs:/data/jobs
-      - ./backend/models.json:/app/backend/models.json:ro
+      - ${SOP_MODELS_HOST_PATH:-./backend/models.example.json}:/app/backend/models.json:ro
       - ./config:/config:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"

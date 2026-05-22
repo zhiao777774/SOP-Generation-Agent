@@ -1,0 +1,30 @@
+{
+  "providers": {
+    "local": {
+      "baseUrl": "your-api-base-url",
+      "api": "openai-completions",
+      "apiKeyEnv": "SOP_LLM_API_KEY",
+      "models": [
+        {
+          "id": "your-llm-model",
+          "name": "SOP Writer (text + image) (text)",
+          "contextWindow": 32768,
+          "maxTokens": 8192,
+          "input": [
+            "text"
+          ]
+        },
+        {
+          "id": "your-vlm-model",
+          "name": "Vision SOP Writer (text + image)",
+          "contextWindow": 131072,
+          "maxTokens": 8192,
+          "input": [
+            "text",
+            "image"
+          ]
+        }
+      ]
+    }
+  }
+}

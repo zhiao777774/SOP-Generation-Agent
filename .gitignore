@@ -5,6 +5,7 @@
 .env.*
 !.env.example
 .envrc
+backend/models.json
 
 # Local data and generated artifacts
 data/

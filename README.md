@@ -35,7 +35,15 @@ Open:
 http://localhost:7860
 ```
 
-Compose builds one FastAPI image, builds the React/Vite frontend inside that image, mounts `./data/jobs` for job artifacts, mounts `./backend/models.json` as the model catalog, and mounts `./config` for tokenizer/domain dictionaries.
+Compose builds one FastAPI image, builds the React/Vite frontend inside that image, mounts `./data/jobs` for job artifacts, mounts a model catalog into `/app/backend/models.json`, and mounts `./config` for tokenizer/domain dictionaries.
+
+For real usage, create a local model catalog first:
+
+```bash
+cp backend/models.example.json backend/models.json
+```
+
+`backend/models.json` is intentionally git-ignored because it may contain local provider URLs, model IDs, or inline API keys. Without a local catalog, Compose falls back to `backend/models.example.json`.
 
 To rebuild after config or dependency changes:
 
@@ -58,6 +66,7 @@ python -m venv .venv
 . .venv/bin/activate
 pip install -e ".[dev]"
 npm --prefix frontend install --legacy-peer-deps
+cp backend/models.example.json backend/models.json
 make dev
 ```
 
@@ -80,6 +89,14 @@ Human-in-the-loop gates are enabled by default. If a gate is disabled, the backe
 ## Model Catalog
 
 Generation models are selected from an AgentPlayground-style `models.json`. Provider URLs and API keys are injected at service startup, not edited in the UI.
+
+The tracked template is `backend/models.example.json`. Copy it to `backend/models.json` and edit the local file for your environment:
+
+```bash
+cp backend/models.example.json backend/models.json
+```
+
+Do not commit `backend/models.json`; it is ignored on purpose. Use `apiKeyEnv` whenever possible instead of storing secrets directly in JSON.
 
 ```json
 {
@@ -118,6 +135,7 @@ Common settings:
 | `SOP_DATA_ROOT`     | Job storage root.                                            | `/data/jobs` in Docker |
 | `SOP_FRONTEND_DIST` | Built frontend directory served by FastAPI.                  | `frontend/dist`        |
 | `SOP_MODELS_PATH`   | Mounted model catalog path.                                  | `backend/models.json`  |
+| `SOP_MODELS_HOST_PATH` | Docker Compose host-side model catalog path. | `./backend/models.example.json` unless `.env` overrides it |
 | `SOP_LLM_API_KEY`   | Optional key referenced by `apiKeyEnv` in `models.json`. | `ollama` in Compose    |
 | `SOP_CORS_ORIGINS`  | Comma-separated allowed origins.                             | `*`                    |
 
