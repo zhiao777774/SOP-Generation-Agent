@@ -367,6 +367,36 @@ legend {
   background: #fbfcfe;
 }
 
+.queue-recovery-banner {
+  align-items: center;
+  background: #fff7ed;
+  border: 1px solid #fdba74;
+  border-radius: 8px;
+  color: #7c2d12;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 12px;
+}
+
+.queue-recovery-banner strong {
+  color: #7c2d12;
+  font-size: var(--text-base);
+}
+
+.queue-recovery-banner p {
+  font-size: var(--text-sm);
+  line-height: 1.45;
+  margin: 3px 0 0;
+}
+
+.queue-recovery-banner button {
+  background: #c2410c;
+  border-color: #c2410c;
+  color: #ffffff;
+  flex: 0 0 auto;
+}
+
 .draft-generation-fallback {
   align-items: center;
   background: #f8fafc;

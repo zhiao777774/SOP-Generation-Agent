@@ -10,6 +10,12 @@ type JobStatus = {
   message?: string;
   error?: string;
   pending_gates: GateName[];
+  execution_state?: "idle" | "queued" | "running" | "interrupted";
+  queue_name?: string;
+  rq_job_id?: string;
+  queue_position?: number;
+  retryable_action?: "analyze" | "generate" | "regenerate_section" | string;
+  active_task?: string;
   review_settings?: {
     template_review_enabled: boolean;
     evidence_review_enabled: boolean;
@@ -23,6 +29,10 @@ type JobSummary = {
   current_step: string;
   progress: number;
   message?: string;
+  execution_state?: "idle" | "queued" | "running" | "interrupted";
+  queue_position?: number;
+  retryable_action?: string;
+  active_task?: string;
   updated_at: number;
   source_count: number;
   reference_count: number;
@@ -446,21 +456,21 @@ export default function App() {
   async function replanEvidence() {
     await run("Re-planning evidence", async () => {
       showToast("Evidence re-plan started", "The system is applying your evidence feedback and rebuilding candidate mappings.");
-      const result = await postJson(`/api/jobs/${jobId}/evidence/replan`, {
+      const nextStatus = await postJson(`/api/jobs/${jobId}/evidence/replan`, {
         global_feedback: evidenceFeedback,
         per_section_feedback: sectionFeedback
       });
-      setEvidencePlan(result);
+      setStatus(nextStatus);
       setDraft(null);
       await refresh();
-      showToast("Evidence updated", "Review the updated evidence plan before approval.");
+      showToast("Evidence re-plan queued", "The worker will update the evidence plan when it is ready.");
     });
   }
 
   async function approve(gate: GateName) {
     await run(`Recording ${gate.replace("_", " ")} decision`, async () => {
       if (gate === "template_review") {
-        showToast("Approving template", "Approving the current section proposal and planning evidence.");
+        showToast("Approving template", "Approving the current section proposal and queuing evidence planning.");
       }
       if (gate === "evidence_review") showToast("Approving evidence", "Recording your evidence plan decision, then generating the draft.");
       if (gate === "draft_review") showToast("Approving draft", "Finalizing the job and preparing downloads.");
@@ -470,7 +480,7 @@ export default function App() {
       });
       await refresh();
       if (gate === "template_review") {
-        showToast("Template approved", "Evidence has been planned from the approved section proposal.");
+        showToast("Template approved", "Evidence planning is queued and will update this job when ready.");
       } else if (gate === "evidence_review") {
         setActiveAction("Generating SOP draft");
         await generateDraft();
@@ -484,14 +494,13 @@ export default function App() {
     setDraftError("");
     showToast("Draft generation started", "The system is generating SOP sections from the approved evidence.");
     try {
-      const result = await postJson(`/api/jobs/${jobId}/generate`, {
+      const nextStatus = await postJson(`/api/jobs/${jobId}/generate`, {
         generation_profile: { language: generationLanguage, tone: "professional", verbosity: "balanced" },
         global_feedback: [templateFeedback, evidenceFeedback].filter(Boolean).join(" ")
       });
-      setDraft(result);
+      setStatus(nextStatus);
       await refresh();
-      showToast("Draft generated", "Review the draft below, then approve it when ready.", "draft_review");
-      window.setTimeout(() => scrollToDraftReview(), 60);
+      showToast("Draft generation queued", "The worker will update this job when the draft is ready.", "draft_review");
     } catch (err) {
       setDraftError(String(err));
       throw err;
@@ -508,14 +517,35 @@ export default function App() {
     await run("Regenerating section", async () => {
       setDraftError("");
       showToast("Section regeneration started", `Regenerating ${sectionId} from your feedback.`);
-      const result = await postJson(`/api/jobs/${jobId}/sections/${sectionId}/regenerate`, {
+      const nextStatus = await postJson(`/api/jobs/${jobId}/sections/${sectionId}/regenerate`, {
         feedback: regenerationFeedback[sectionId] || "",
         generation_profile: { language: generationLanguage, tone: "professional", verbosity: "balanced" }
       });
-      setDraft(result);
+      setStatus(nextStatus);
       await refresh();
-      showToast("Section regenerated", "Review the updated section and approve the draft when ready.", "draft_review");
+      showToast("Section regeneration queued", "The worker will update the draft when the section is regenerated.", "draft_review");
     });
+  }
+
+  async function retryInterruptedJob() {
+    if (!status?.retryable_action) return;
+    if (status.retryable_action === "analyze") {
+      await analyze();
+      return;
+    }
+    if (status.retryable_action === "generate") {
+      await generate();
+      return;
+    }
+    if (status.retryable_action === "approve_template") {
+      await approve("template_review");
+      return;
+    }
+    if (status.retryable_action === "replan_evidence") {
+      await replanEvidence();
+      return;
+    }
+    showToast("Retry unavailable", "Section regeneration retries need to be started from the affected section.");
   }
 
   async function run(label: string, action: () => Promise<void>) {
@@ -580,6 +610,7 @@ export default function App() {
   const pendingGates = status?.pending_gates || [];
   const analysisRunning = status?.status === "analyzing";
   const generationRunning = status?.status === "generating";
+  const queueInterrupted = status?.execution_state === "interrupted";
   const templateReviewPending = pendingGates.includes("template_review");
   const evidenceReviewPending = pendingGates.includes("evidence_review");
   const evidenceReviewUnlocked = Boolean(evidencePlan && !templateReviewPending);
@@ -657,6 +688,17 @@ export default function App() {
         </div>
 
         <div className="workspace">
+          {queueInterrupted && (
+            <div className="queue-recovery-banner">
+              <div>
+                <strong>Job interrupted</strong>
+                <p>{status?.message || "The previous queued or running task was interrupted. Retry the last action."}</p>
+              </div>
+              <button type="button" onClick={() => retryInterruptedJob()} disabled={busy}>
+                Retry
+              </button>
+            </div>
+          )}
           <section className="panel upload-panel" ref={uploadRef}>
           <h2>1. Upload</h2>
           <form key={uploadFormKey} onSubmit={createAndUpload} className="stack">
@@ -1081,6 +1123,7 @@ function JobSidebar({
               <small>
                 <span className="job-progress-chip">{Math.round((job.progress || 0) * 100)}%</span>
                 {getUserStatusLabel(job)}
+                {job.execution_state === "queued" && job.queue_position ? ` · #${job.queue_position}` : ""}
               </small>
               <small>{formatJobUpdatedAt(job.updated_at)}</small>
             </button>
@@ -1699,6 +1742,8 @@ function getCurrentTask(
   draft: GenerationResult | null
 ) {
   if (!status) return { title: "Create a job first", detail: "Upload at least one source document and one SOP template, then create a job." };
+  if (status.execution_state === "interrupted") return { title: "Job interrupted", detail: status.message || "Retry the last queued action." };
+  if (status.execution_state === "queued") return { title: "Job queued", detail: status.queue_position ? `Waiting for a worker. Queue position: ${status.queue_position}.` : status.message || "Waiting for a worker." };
   if (status.status === "analyzing") return { title: "Analysis is running", detail: status.message || "The system is parsing files and planning evidence." };
   if (status.status === "generating") return { title: "Draft generation is running", detail: status.message || "The system is generating SOP sections." };
   if (!templateResolution) return { title: "Next: run analysis", detail: "This creates the template section proposal for review." };
@@ -1711,9 +1756,22 @@ function getCurrentTask(
 }
 
 function getUserStatusLabel(
-  status: { status?: string; current_step?: string; pending_gates?: GateName[] } | null | undefined
+  status: { status?: string; current_step?: string; pending_gates?: GateName[]; execution_state?: string } | null | undefined
 ) {
   if (!status?.status) return "Idle";
+  if (status.execution_state === "interrupted") return "Interrupted";
+  if (status.execution_state === "queued") {
+    if (status.current_step === "queued_generation") return "Draft queued";
+    if (status.current_step === "queued_regeneration") return "Regeneration queued";
+    if (status.current_step === "queued_evidence_planning") return "Evidence planning queued";
+    if (status.current_step === "queued_evidence_replan") return "Evidence re-plan queued";
+    return "Queued";
+  }
+  if (status.execution_state === "running") {
+    if (status.status === "generating") return "Generating draft";
+    if (status.status === "analyzing") return "Analyzing files";
+    return "Running";
+  }
   if (status.status === "failed") return "Failed";
   if (status.status === "analyzing") return "Analyzing files";
   if (status.status === "generating") return "Generating draft";
@@ -1761,6 +1819,7 @@ function Progress({ status }: { status: JobStatus | null }) {
     <div>
       <div className="progress-track"><div style={{ width: `${percent}%` }} /></div>
       <p><strong>{getUserStatusLabel(status)}</strong> · {percent}%</p>
+      {status?.execution_state === "queued" && status.queue_position ? <p>Queue position: {status.queue_position}</p> : null}
       {status?.message && <p>{status.message}</p>}
       {status?.pending_gates?.length ? <p className="warning">{getPendingReviewLabel(status.pending_gates)}</p> : null}
     </div>
