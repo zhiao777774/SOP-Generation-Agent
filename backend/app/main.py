@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import List, Optional
 from uuid import uuid4
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -25,6 +25,7 @@ from backend.app.pipeline.schemas import (
 )
 from backend.app.services.artifact_service import ArtifactService, normalize_status_for_ui
 from backend.app.services.job_service import JobService
+from backend.app.services.task_queue import TaskQueue
 
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,7 @@ for warning in preflight_report.warnings:
 artifacts = ArtifactService(config.data_root)
 jobs = JobService(config, artifacts)
 model_catalog = ModelCatalog(config.models_path)
+task_queue = TaskQueue(config, artifacts)
 
 
 async def _cleanup_expired_jobs_loop() -> None:
@@ -176,23 +178,12 @@ def delete_job(request: Request, job_id: str):
 def analyze(
     request: Request,
     job_id: str,
-    background_tasks: BackgroundTasks,
     background: bool = Query(default=False),
 ):
     _ensure_owned_job(job_id, _require_owner_id(request))
-    if background:
-        artifacts.update_status(
-            job_id,
-            JobStatusValue.ANALYZING,
-            "queued_analysis",
-            0.12,
-            "Analysis queued and running in the background.",
-            pending_gates=[],
-        )
-        background_tasks.add_task(_run_analyze_background, job_id)
-        return artifacts.read_json(job_id, "status")
     try:
-        return jobs.analyze(job_id)
+        result = task_queue.enqueue_analyze(job_id)
+        return result.status
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except ValueError as exc:
@@ -202,24 +193,16 @@ def analyze(
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-def _run_analyze_background(job_id: str) -> None:
-    try:
-        jobs.analyze(job_id)
-    except Exception as exc:
-        artifacts.update_status(
-            job_id,
-            JobStatusValue.FAILED,
-            "failed",
-            0,
-            "Analysis failed.",
-            error=str(exc),
-        )
-
-
 @app.post("/api/jobs/{job_id}/review/{gate}")
 def approve_gate(request: Request, job_id: str, gate: GateName, decision_request: ReviewDecisionRequest):
     _ensure_owned_job(job_id, _require_owner_id(request))
     try:
+        if gate == GateName.TEMPLATE:
+            result = task_queue.enqueue_template_approval(
+                job_id,
+                decision_request.model_dump(mode="json"),
+            )
+            return result.status
         return jobs.approve_gate(job_id, gate, decision_request)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
@@ -238,7 +221,8 @@ def refine_template(request: Request, job_id: str, refine_request: TemplateRefin
 def replan_evidence(request: Request, job_id: str, decision_request: ReviewDecisionRequest):
     _ensure_owned_job(job_id, _require_owner_id(request))
     try:
-        return jobs.replan_evidence(job_id, decision_request)
+        result = task_queue.enqueue_evidence_replan(job_id, decision_request.model_dump(mode="json"))
+        return result.status
     except PermissionError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except FileNotFoundError as exc:
@@ -249,7 +233,12 @@ def replan_evidence(request: Request, job_id: str, decision_request: ReviewDecis
 def generate(request: Request, job_id: str, generate_request: GenerateRequest):
     _ensure_owned_job(job_id, _require_owner_id(request))
     try:
-        return jobs.generate(job_id, generate_request.generation_profile, generate_request.global_feedback)
+        result = task_queue.enqueue_generate(
+            job_id,
+            generate_request.generation_profile.model_dump(mode="json"),
+            generate_request.global_feedback,
+        )
+        return result.status
     except PermissionError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except FileNotFoundError as exc:
@@ -262,7 +251,13 @@ def generate(request: Request, job_id: str, generate_request: GenerateRequest):
 def regenerate_section(request: Request, job_id: str, section_id: str, regenerate_request: RegenerateSectionRequest):
     _ensure_owned_job(job_id, _require_owner_id(request))
     try:
-        return jobs.regenerate_section(job_id, section_id, regenerate_request.feedback, regenerate_request.generation_profile)
+        result = task_queue.enqueue_regenerate_section(
+            job_id,
+            section_id,
+            regenerate_request.feedback,
+            regenerate_request.generation_profile.model_dump(mode="json"),
+        )
+        return result.status
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except ValueError as exc:
@@ -273,6 +268,7 @@ def regenerate_section(request: Request, job_id: str, section_id: str, regenerat
 def status(request: Request, job_id: str):
     _ensure_owned_job(job_id, _require_owner_id(request))
     try:
+        task_queue.refresh_queue_position(job_id)
         return normalize_status_for_ui(artifacts.read_json(job_id, "status"))
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))

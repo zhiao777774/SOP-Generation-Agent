@@ -150,6 +150,20 @@ Job isolation and retention:
 | `SOP_JOB_RETENTION_DAYS`           | Job artifact retention window.`0` disables TTL cleanup.               | `30`            |
 | `SOP_JOB_CLEANUP_INTERVAL_SECONDS` | Background cleanup interval while service runs.`0` disables the loop. | `3600`          |
 
+Queue and concurrency:
+
+| Variable                         | Purpose                                             | Default                 |
+| -------------------------------- | --------------------------------------------------- | ----------------------- |
+| `SOP_QUEUE_REDIS_URL`          | Redis URL used by the web process and RQ worker.    | `redis://redis:6379/0` |
+| `SOP_WORKER_QUEUES`            | Comma-separated RQ queues consumed by workers.      | `default`             |
+| `SOP_WORKER_COUNT`             | RQ worker processes started by the worker service.  | `4`                   |
+| `SOP_MAX_CONCURRENT_ANALYZE`   | Max concurrent analysis/evidence-planning tasks.    | `3`                   |
+| `SOP_MAX_CONCURRENT_GENERATE`  | Max concurrent draft generation tasks.              | `2`                   |
+| `SOP_MAX_CONCURRENT_OCR`       | Max concurrent OCR provider calls.                  | `2`                   |
+| `SOP_MAX_CONCURRENT_EMBEDDING` | Max concurrent embedding provider calls.            | `4`                   |
+| `SOP_MAX_CONCURRENT_LLM`       | Max concurrent text LLM calls.                      | `2`                   |
+| `SOP_MAX_CONCURRENT_VLM`       | Max concurrent image/VLM calls.                     | `1`                   |
+
 Provider settings:
 
 | Variable                          | Purpose                                                                      |

@@ -17,6 +17,13 @@ class JobStatusValue(str, Enum):
     FAILED = "failed"
 
 
+class JobExecutionState(str, Enum):
+    IDLE = "idle"
+    QUEUED = "queued"
+    RUNNING = "running"
+    INTERRUPTED = "interrupted"
+
+
 class GateName(str, Enum):
     TEMPLATE = "template_review"
     EVIDENCE = "evidence_review"
@@ -61,6 +68,15 @@ class JobStatus(BaseModel):
     error: Optional[str] = None
     review_settings: ReviewSettings = Field(default_factory=ReviewSettings)
     pending_gates: List[GateName] = Field(default_factory=list)
+    execution_state: JobExecutionState = JobExecutionState.IDLE
+    queue_name: Optional[str] = None
+    rq_job_id: Optional[str] = None
+    queued_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    queue_position: Optional[int] = None
+    retryable_action: Optional[str] = None
+    active_task: Optional[str] = None
 
 
 class JobLogEntry(BaseModel):

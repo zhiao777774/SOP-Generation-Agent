@@ -5,6 +5,7 @@ from typing import List, Optional
 import requests
 
 from backend.app.core.config import ProviderConfig
+from backend.app.services.concurrency import limited_post
 
 
 @dataclass
@@ -81,7 +82,7 @@ class OcrClient:
             ],
             "temperature": 0,
         }
-        response = requests.post(url, headers=headers, json=payload, timeout=180)
+        response = limited_post("ocr", requests.post, url, headers=headers, json=payload, timeout=180)
         response.raise_for_status()
         data = response.json()
         try:

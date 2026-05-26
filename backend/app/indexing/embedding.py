@@ -3,6 +3,7 @@ from typing import Dict, Iterable, List
 import requests
 
 from backend.app.core.config import ProviderConfig
+from backend.app.services.concurrency import limited_post
 
 
 class EmbeddingUnavailable(RuntimeError):
@@ -32,7 +33,9 @@ class EmbeddingClient:
         is_openai = "/v1/" in self.config.api_base
         payload = {"model": self.config.model}
         payload["input" if is_openai else "prompt"] = text
-        response = requests.post(
+        response = limited_post(
+            "embedding",
+            requests.post,
             self.config.api_base,
             headers=headers,
             json=payload,

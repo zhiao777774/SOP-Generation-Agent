@@ -10,6 +10,7 @@ import requests
 from backend.app.core.config import ProviderConfig
 from backend.app.ingestion.pdf_image_extractor import PdfImageExtractor
 from backend.app.pipeline.schemas import EvidencePlan, ImageEvidenceRef, SectionEvidence
+from backend.app.services.concurrency import limited_post
 
 
 @dataclass(frozen=True)
@@ -202,7 +203,9 @@ class ImageEvidencePlanner:
             "temperature": 0,
         }
         try:
-            response = requests.post(
+            response = limited_post(
+                "vlm",
+                requests.post,
                 f"{self.vlm_config.api_base.rstrip('/')}/chat/completions",
                 headers=headers,
                 json=payload,

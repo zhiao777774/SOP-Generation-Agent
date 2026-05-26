@@ -7,11 +7,13 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
+from filelock import FileLock
 from fastapi import UploadFile
 from pydantic import BaseModel
 
 from backend.app.pipeline.schemas import (
     GateName,
+    JobExecutionState,
     JobLogEntry,
     JobStatus,
     JobStatusValue,
@@ -66,6 +68,13 @@ class ArtifactService:
             return self.job_dir(job_id) / "outputs" / f"{name}.json"
         return self.job_dir(job_id) / "intermediate" / f"{name}.json"
 
+    def lock_path(self, job_id: str) -> Path:
+        return self.job_dir(job_id) / ".job.lock"
+
+    def job_lock(self, job_id: str) -> FileLock:
+        self.ensure_job(job_id)
+        return FileLock(str(self.lock_path(job_id)))
+
     def ensure_job(self, job_id: str) -> None:
         if not self.job_dir(job_id).exists():
             raise FileNotFoundError(f"Unknown job_id: {job_id}")
@@ -93,6 +102,12 @@ class ArtifactService:
         removed: List[str] = []
         for status_path in self.data_root.glob("*/status.json"):
             try:
+                status_data = json.loads(status_path.read_text(encoding="utf-8"))
+                if status_data.get("execution_state") in {
+                    JobExecutionState.QUEUED.value,
+                    JobExecutionState.RUNNING.value,
+                }:
+                    continue
                 if status_path.stat().st_mtime >= cutoff:
                     continue
                 job_dir = self._safe_job_dir(status_path.parent.name)
@@ -146,15 +161,15 @@ class ArtifactService:
     def write_json(self, job_id: str, name: str, value: Any) -> Path:
         self.ensure_job(job_id)
         target = self.artifact_path(job_id, name)
-        target.parent.mkdir(parents=True, exist_ok=True)
         data = _to_jsonable(value)
-        target.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        with self.job_lock(job_id):
+            self._write_json_unlocked(target, data)
         return target
 
     def read_json(self, job_id: str, name: str, model: Optional[type] = None) -> Any:
         self.ensure_job(job_id)
         target = self.artifact_path(job_id, name)
-        data = json.loads(target.read_text(encoding="utf-8"))
+        data = self._read_json_file(target)
         if model:
             return model(**data)
         return data
@@ -193,17 +208,90 @@ class ArtifactService:
         error: Optional[str] = None,
         pending_gates: Optional[List] = None,
     ) -> JobStatus:
-        current = self.read_json(job_id, "status", JobStatus)
-        current.status = status
-        current.current_step = step
-        current.progress = progress
-        current.message = message
-        current.error = error
-        if pending_gates is not None:
-            current.pending_gates = pending_gates
-        self.write_json(job_id, "status", current)
-        self.append_log(job_id, step, message or status.value, error)
+        with self.job_lock(job_id):
+            current = self._read_json_unlocked(job_id, "status", JobStatus)
+            current.status = status
+            current.current_step = step
+            current.progress = progress
+            current.message = message
+            current.error = error
+            if pending_gates is not None:
+                current.pending_gates = pending_gates
+            self._write_json_unlocked(self.artifact_path(job_id, "status"), _to_jsonable(current))
+            self._append_log_unlocked(job_id, step, message or status.value, error)
         return current
+
+    def update_queue_state(
+        self,
+        job_id: str,
+        execution_state: JobExecutionState,
+        *,
+        queue_name: Optional[str] = None,
+        rq_job_id: Optional[str] = None,
+        queue_position: Optional[int] = None,
+        retryable_action: Optional[str] = None,
+        active_task: Optional[str] = None,
+        message: Optional[str] = None,
+        status: Optional[JobStatusValue] = None,
+        current_step: Optional[str] = None,
+        progress: Optional[float] = None,
+        error: Optional[str] = None,
+        log: bool = True,
+    ) -> JobStatus:
+        now = datetime.utcnow()
+        with self.job_lock(job_id):
+            current = self._read_json_unlocked(job_id, "status", JobStatus)
+            current.execution_state = execution_state
+            current.queue_name = queue_name
+            current.rq_job_id = rq_job_id
+            current.queue_position = queue_position
+            current.retryable_action = retryable_action
+            current.active_task = active_task
+            current.message = message if message is not None else current.message
+            current.error = error
+            if status is not None:
+                current.status = status
+            if current_step is not None:
+                current.current_step = current_step
+            if progress is not None:
+                current.progress = progress
+            if execution_state == JobExecutionState.QUEUED:
+                current.queued_at = now
+                current.started_at = None
+                current.finished_at = None
+            elif execution_state == JobExecutionState.RUNNING:
+                current.started_at = now
+                current.finished_at = None
+            elif execution_state in {JobExecutionState.IDLE, JobExecutionState.INTERRUPTED}:
+                current.finished_at = now
+                if execution_state == JobExecutionState.IDLE:
+                    current.queue_name = None
+                    current.rq_job_id = None
+                    current.queue_position = None
+                    current.retryable_action = None
+                    current.active_task = None
+            self._write_json_unlocked(self.artifact_path(job_id, "status"), _to_jsonable(current))
+            if log:
+                self._append_log_unlocked(
+                    job_id,
+                    current.current_step or execution_state.value,
+                    message or execution_state.value,
+                    error,
+                )
+        return current
+
+    def list_active_jobs(self) -> List[JobStatus]:
+        if not self.data_root.exists():
+            return []
+        active: List[JobStatus] = []
+        for status_path in self.data_root.glob("*/status.json"):
+            try:
+                status = JobStatus(**self._read_json_file(status_path))
+            except Exception:
+                continue
+            if status.execution_state in {JobExecutionState.QUEUED, JobExecutionState.RUNNING}:
+                active.append(status)
+        return active
 
     def append_log(
         self,
@@ -214,12 +302,38 @@ class ArtifactService:
         level: str = "info",
     ) -> None:
         self.ensure_job(job_id)
+        with self.job_lock(job_id):
+            self._append_log_unlocked(job_id, step, message, technical_detail, level)
+
+    def _append_log_unlocked(
+        self,
+        job_id: str,
+        step: str,
+        message: str,
+        technical_detail: Optional[str] = None,
+        level: str = "info",
+    ) -> None:
         entry = JobLogEntry(
             level=level, step=step, message=message, technical_detail=technical_detail
         )
         target = self.job_dir(job_id) / "logs" / "events.jsonl"
         with target.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(model_to_dict(entry), ensure_ascii=False) + "\n")
+
+    def _read_json_unlocked(self, job_id: str, name: str, model: Optional[type] = None) -> Any:
+        data = self._read_json_file(self.artifact_path(job_id, name))
+        if model:
+            return model(**data)
+        return data
+
+    def _read_json_file(self, target: Path) -> Any:
+        return json.loads(target.read_text(encoding="utf-8"))
+
+    def _write_json_unlocked(self, target: Path, data: Any) -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temp = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
+        temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp.replace(target)
 
     def read_logs(self, job_id: str) -> List[Dict]:
         self.ensure_job(job_id)
@@ -269,6 +383,10 @@ class ArtifactService:
                     "current_step": display_status.get("current_step"),
                     "progress": display_status.get("progress", 0),
                     "message": display_status.get("message"),
+                    "execution_state": display_status.get("execution_state"),
+                    "queue_position": display_status.get("queue_position"),
+                    "retryable_action": display_status.get("retryable_action"),
+                    "active_task": display_status.get("active_task"),
                     "updated_at": status_path.stat().st_mtime,
                     "source_count": len(uploaded.get("source_files") or []),
                     "reference_count": len(uploaded.get("reference_files") or []),

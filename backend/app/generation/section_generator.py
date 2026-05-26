@@ -15,6 +15,7 @@ from backend.app.pipeline.schemas import (
     StructuredListItem,
     StructuredSectionDraft,
 )
+from backend.app.services.concurrency import limited_post
 
 
 _LANG_INSTRUCTIONS = {
@@ -251,7 +252,9 @@ class SectionGenerator:
         last_error = ""
         for attempt in range(3):
             try:
-                response = requests.post(
+                response = limited_post(
+                    "llm",
+                    requests.post,
                     f"{config.api_base.rstrip('/')}/chat/completions",
                     headers=headers,
                     json=payload,

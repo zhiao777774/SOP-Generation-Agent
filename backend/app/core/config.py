@@ -49,6 +49,15 @@ class AppConfig:
     llm: ProviderConfig
     embedding: ProviderConfig
     ocr: ProviderConfig
+    queue_redis_url: str = "redis://redis:6379/0"
+    worker_queues: tuple[str, ...] = ("default",)
+    worker_count: int = 4
+    max_concurrent_analyze: int = 3
+    max_concurrent_generate: int = 2
+    max_concurrent_ocr: int = 2
+    max_concurrent_embedding: int = 4
+    max_concurrent_llm: int = 2
+    max_concurrent_vlm: int = 1
     client_cookie_name: str = "sop_client_id"
     client_cookie_max_age_days: float = 30
     client_cookie_secure: bool = False
@@ -185,6 +194,20 @@ def load_config() -> AppConfig:
             model=os.getenv("SOP_OCR_MODEL"),
             timeout_seconds=float(os.getenv("SOP_OCR_TIMEOUT_SECONDS", "120")),
         ),
+        queue_redis_url=os.getenv("SOP_QUEUE_REDIS_URL", "redis://redis:6379/0"),
+        worker_queues=tuple(
+            queue.strip()
+            for queue in os.getenv("SOP_WORKER_QUEUES", "default").split(",")
+            if queue.strip()
+        )
+        or ("default",),
+        worker_count=max(_int_from_env("SOP_WORKER_COUNT", 4), 1),
+        max_concurrent_analyze=max(_int_from_env("SOP_MAX_CONCURRENT_ANALYZE", 3), 1),
+        max_concurrent_generate=max(_int_from_env("SOP_MAX_CONCURRENT_GENERATE", 2), 1),
+        max_concurrent_ocr=max(_int_from_env("SOP_MAX_CONCURRENT_OCR", 2), 1),
+        max_concurrent_embedding=max(_int_from_env("SOP_MAX_CONCURRENT_EMBEDDING", 4), 1),
+        max_concurrent_llm=max(_int_from_env("SOP_MAX_CONCURRENT_LLM", 2), 1),
+        max_concurrent_vlm=max(_int_from_env("SOP_MAX_CONCURRENT_VLM", 1), 1),
         client_cookie_name=os.getenv("SOP_CLIENT_COOKIE_NAME", "sop_client_id").strip() or "sop_client_id",
         client_cookie_max_age_days=cookie_max_age_days,
         client_cookie_secure=_bool_from_env("SOP_CLIENT_COOKIE_SECURE", False),

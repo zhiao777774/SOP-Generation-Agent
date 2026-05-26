@@ -2,6 +2,7 @@ import requests
 
 from backend.app.core.config import ProviderConfig
 from backend.app.ingestion.chunking import summarize
+from backend.app.services.concurrency import limited_post
 
 
 class Contextualizer:
@@ -53,7 +54,14 @@ class Contextualizer:
             "max_tokens": max_tokens,
         }
         try:
-            response = requests.post(url, headers=headers, json=payload, timeout=self.config.timeout_seconds)
+            response = limited_post(
+                "llm",
+                requests.post,
+                url,
+                headers=headers,
+                json=payload,
+                timeout=self.config.timeout_seconds,
+            )
             response.raise_for_status()
             data = response.json()
             return data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()

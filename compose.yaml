@@ -8,12 +8,23 @@ services:
     image: sop-generation-agent:mvp
     ports:
       - "${SOP_PORT:-7860}:7860"
-    environment:
+    depends_on:
+      - redis
+    environment: &app-environment
       SOP_DATA_ROOT: /data/jobs
       SOP_FRONTEND_DIST: /app/frontend/dist
       SOP_MODELS_PATH: /app/backend/models.json
       SOP_JOB_RETENTION_DAYS: ${SOP_JOB_RETENTION_DAYS:-30}
       SOP_JOB_CLEANUP_INTERVAL_SECONDS: ${SOP_JOB_CLEANUP_INTERVAL_SECONDS:-3600}
+      SOP_QUEUE_REDIS_URL: ${SOP_QUEUE_REDIS_URL:-redis://redis:6379/0}
+      SOP_WORKER_QUEUES: ${SOP_WORKER_QUEUES:-default}
+      SOP_WORKER_COUNT: ${SOP_WORKER_COUNT:-4}
+      SOP_MAX_CONCURRENT_ANALYZE: ${SOP_MAX_CONCURRENT_ANALYZE:-3}
+      SOP_MAX_CONCURRENT_GENERATE: ${SOP_MAX_CONCURRENT_GENERATE:-2}
+      SOP_MAX_CONCURRENT_OCR: ${SOP_MAX_CONCURRENT_OCR:-2}
+      SOP_MAX_CONCURRENT_EMBEDDING: ${SOP_MAX_CONCURRENT_EMBEDDING:-4}
+      SOP_MAX_CONCURRENT_LLM: ${SOP_MAX_CONCURRENT_LLM:-2}
+      SOP_MAX_CONCURRENT_VLM: ${SOP_MAX_CONCURRENT_VLM:-1}
       SOP_CLIENT_COOKIE_NAME: ${SOP_CLIENT_COOKIE_NAME:-sop_client_id}
       SOP_CLIENT_COOKIE_MAX_AGE_DAYS: ${SOP_CLIENT_COOKIE_MAX_AGE_DAYS:-}
       SOP_CLIENT_COOKIE_SECURE: ${SOP_CLIENT_COOKIE_SECURE:-false}
@@ -54,9 +65,30 @@ services:
       SOP_OCR_API_KEY: ${SOP_OCR_API_KEY:-}
       SOP_OCR_MODEL: ${SOP_OCR_MODEL:-}
       SOP_OCR_TIMEOUT_SECONDS: ${SOP_OCR_TIMEOUT_SECONDS:-120}
-    volumes:
+    volumes: &app-volumes
       - ./data/jobs:/data/jobs
       - ${SOP_MODELS_HOST_PATH:-./backend/models.example.json}:/app/backend/models.json:ro
       - ./config:/config:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+  worker:
+    image: sop-generation-agent:mvp
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "-m", "backend.app.worker"]
+    depends_on:
+      - redis
+    environment: *app-environment
+    volumes: *app-volumes
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis-data:/data
+
+volumes:
+  redis-data:

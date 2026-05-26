@@ -8,6 +8,7 @@ from backend.app.core.config import ProviderConfig
 from backend.app.indexing.tokenizer import DOMAIN_TOKEN_PATTERN
 from backend.app.ingestion.chunking import summarize
 from backend.app.pipeline.schemas import DomainTermSuggestion, ReferenceDocument, SourceDocument
+from backend.app.services.concurrency import limited_post
 
 
 class DomainTermSuggester:
@@ -51,7 +52,9 @@ class DomainTermSuggester:
             "term is stable across equipment/process documents. Preserve equipment codes exactly.\n\n"
             f"Candidates:\n{json.dumps(candidates[:120], ensure_ascii=False)}"
         )
-        response = requests.post(
+        response = limited_post(
+            "llm",
+            requests.post,
             url,
             headers=headers,
             json={

@@ -13,6 +13,7 @@ from backend.app.pipeline.schemas import (
     TemplateSectionCandidate,
     TemplateStructure,
 )
+from backend.app.services.concurrency import limited_post
 
 
 class SectionRefiner:
@@ -63,7 +64,9 @@ class SectionRefiner:
             "temperature": 0,
         }
         try:
-            response = requests.post(
+            response = limited_post(
+                "llm",
+                requests.post,
                 f"{self.config.api_base.rstrip('/')}/chat/completions",
                 headers=headers,
                 json=payload,

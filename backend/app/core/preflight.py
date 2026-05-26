@@ -30,6 +30,7 @@ def run_preflight(config: AppConfig) -> PreflightReport:
     _check_ocr_provider(config, errors, warnings)
     _check_pipeline_settings(config, errors)
     _check_tokenizer_settings(config, errors)
+    _check_queue_settings(config, errors)
     _check_client_cookie_settings(config, errors)
     _check_retention(config, warnings)
 
@@ -168,6 +169,21 @@ def _check_retention(config: AppConfig, warnings: List[str]) -> None:
         warnings.append("SOP_JOB_RETENTION_DAYS=0; expired job cleanup is disabled.")
     if config.job_retention_days > 0 and config.job_cleanup_interval_seconds == 0:
         warnings.append("SOP_JOB_CLEANUP_INTERVAL_SECONDS=0; expired jobs clean on startup and job listing only.")
+
+
+def _check_queue_settings(config: AppConfig, errors: List[str]) -> None:
+    if importlib.util.find_spec("redis") is None:
+        errors.append("redis package is required for queued job execution")
+    if importlib.util.find_spec("rq") is None:
+        errors.append("rq package is required for queued job execution")
+    if importlib.util.find_spec("filelock") is None:
+        errors.append("filelock package is required for artifact write locking")
+    if not config.queue_redis_url:
+        errors.append("SOP_QUEUE_REDIS_URL must not be empty")
+    if not config.worker_queues:
+        errors.append("SOP_WORKER_QUEUES must define at least one queue")
+    if config.worker_count < 1:
+        errors.append("SOP_WORKER_COUNT must be at least 1")
 
 
 def _check_client_cookie_settings(config: AppConfig, errors: List[str]) -> None:
